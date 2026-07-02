@@ -1205,6 +1205,28 @@ tbody tr:last-child td { border-bottom:none; }
           </table>
         </div>
       </div>
+      <div class="card mb16">
+        <div class="card-header"><span class="card-title">🗄️ Arquivamento de Dados Antigos</span></div>
+        <p class="text-muted" style="font-size:13px;margin-bottom:12px">
+          O banco na nuvem (Firestore) tem limite de 1024KB por documento. Arquive mensalmente os registros
+          com mais de 1 mês: eles são baixados num arquivo (JSON + CSV) e removidos do sistema pra manter o espaço livre.
+        </p>
+        <div class="form-grid" style="margin-bottom:12px">
+          <div class="form-group">
+            <label>Tamanho atual na nuvem</label>
+            <div id="cfg-tamanho-nuvem" class="font-mono" style="font-size:20px;font-weight:700">—</div>
+          </div>
+          <div class="form-group">
+            <label>Registros arquiváveis (&gt; 1 mês)</label>
+            <div id="cfg-qtd-arquivavel" class="font-mono" style="font-size:20px;font-weight:700">—</div>
+          </div>
+          <div class="form-group">
+            <label>Último arquivamento</label>
+            <div id="cfg-ultimo-arquivamento" style="font-size:13px;color:var(--text2);padding-top:6px">—</div>
+          </div>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="arquivarDadosAntigos()">🗄️ Arquivar dados com mais de 1 mês</button>
+      </div>
       <div class="card">
         <div class="card-header"><span class="card-title">⚠️ Dados do Sistema</span></div>
         <p class="text-muted" style="font-size:13px;margin-bottom:12px">Os dados são salvos no navegador (localStorage). Exporte regularmente.</p>
@@ -1759,6 +1781,7 @@ function loadDB() {
         if (_primeiraSync) {
           toast('☁️ Dados sincronizados com a nuvem');
           _primeiraSync = false;
+          _lembrarArquivamentoSeNecessario();
         } else {
           toast('🔄 Dashboard atualizado em tempo real');
         }
@@ -1824,6 +1847,133 @@ async function flushToFirebase() {
       }
     }, 3000);
   } catch(e) { console.error('Firebase flush error:', e); }
+}
+
+// ===== ARQUIVAMENTO DE DADOS ANTIGOS =====
+// O Firestore tem limite de 1MB por documento e todo o banco vive num só
+// documento (esccell/db). Esta rotina baixa localmente (JSON + CSV) os
+// registros com mais de 1 mês e os remove do banco ativo (nuvem + local),
+// pra manter o documento sempre com espaço de sobra.
+
+function _tamanhoAtualKB() {
+  try { return Math.round(new Blob([JSON.stringify(db)]).size / 1024); }
+  catch(e) { return 0; }
+}
+
+function _dataArquivoCorte() {
+  const corte = new Date();
+  corte.setMonth(corte.getMonth() - 1);
+  return corte;
+}
+
+function prepararArquivamento() {
+  const corte = _dataArquivoCorte();
+  const vendasAntigas = (db.vendas || []).filter(v => v.data && new Date(v.data) < corte);
+  // OS ainda em andamento nunca são arquivadas, só as já entregues.
+  const ordensAntigas = (db.ordens || []).filter(o => o.status === 'entregue' && o.data && new Date(o.data) < corte);
+  const movAntigas    = (db.movimentacoes || []).filter(m => m.data && new Date(m.data) < corte);
+  const despAntigas   = (db.despesas || []).filter(d => d.data && new Date(d.data) < corte);
+  // Só caixas já fechados; um caixa aberto nunca é arquivado.
+  const caixasAntigos = (db.caixas || []).filter(c => c.status === 'fechado' && c.fechamento && new Date(c.fechamento) < corte);
+
+  const total = vendasAntigas.length + ordensAntigas.length + movAntigas.length + despAntigas.length + caixasAntigos.length;
+  return { corte, vendasAntigas, ordensAntigas, movAntigas, despAntigas, caixasAntigos, total };
+}
+
+function arquivarDadosAntigos() {
+  const prep = prepararArquivamento();
+  if (prep.total === 0) {
+    toast('Nenhum dado com mais de 1 mês para arquivar 👍');
+    return;
+  }
+  const dataCorteTxt = prep.corte.toLocaleDateString('pt-BR');
+  const msg = `Isso vai baixar um arquivo com ${prep.total} registro(s) anteriores a ${dataCorteTxt} e REMOVÊ-LOS do sistema (nuvem e local). Digite a senha de admin para confirmar.`;
+  pedirSenhaAdmin(msg, () => _executarArquivamento(prep));
+}
+
+function _baixarArquivo(blob, nomeArquivo) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = nomeArquivo;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function _executarArquivamento(prep) {
+  const antesKB = _tamanhoAtualKB();
+  const hojeStr = new Date().toISOString().slice(0, 10);
+
+  const arquivo = {
+    geradoEm: new Date().toISOString(),
+    loja: (db.config && db.config.nome) || 'ESC CELL',
+    arquivadoAte: prep.corte.toISOString(),
+    vendas: prep.vendasAntigas,
+    ordens: prep.ordensAntigas,
+    movimentacoes: prep.movAntigas,
+    despesas: prep.despAntigas,
+    caixas: prep.caixasAntigos
+  };
+
+  // Backup completo e fiel em JSON (pra reimportar se precisar no futuro)
+  _baixarArquivo(
+    new Blob([JSON.stringify(arquivo, null, 2)], { type: 'application/json' }),
+    `esccell_arquivo_${hojeStr}.json`
+  );
+
+  // Planilha simples de vendas + O.S. em CSV, pra abrir direto no Excel
+  const linhas = [['Tipo', 'ID', 'Data', 'Descrição', 'Valor (R$)', 'Pagamento'].join(';')];
+  prep.vendasAntigas.forEach(v => {
+    const itens = (v.items || []).map(i => `${i.qty}x ${i.nome}`).join(', ').replace(/;/g, ',');
+    linhas.push(['Venda', v.id, new Date(v.data).toLocaleString('pt-BR'), itens, (v.total || 0).toFixed(2).replace('.', ','), v.pagamento || ''].join(';'));
+  });
+  prep.ordensAntigas.forEach(o => {
+    const desc = `${o.marca || ''} ${o.modelo || ''} (${o.cliente || ''})`.replace(/;/g, ',');
+    linhas.push(['OS', o.id, new Date(o.data).toLocaleString('pt-BR'), desc, (parseFloat(o.valor) || 0).toFixed(2).replace('.', ','), o.pagamento || ''].join(';'));
+  });
+  setTimeout(() => {
+    _baixarArquivo(
+      new Blob(['\uFEFF' + linhas.join('\n')], { type: 'text/csv;charset=utf-8' }),
+      `esccell_arquivo_vendas_os_${hojeStr}.csv`
+    );
+  }, 400); // pequeno atraso pra evitar bloqueio de pop-up com 2 downloads seguidos
+
+  // Remove do banco ativo apenas o que acabou de ser arquivado
+  const idsVendas = new Set(prep.vendasAntigas.map(v => v.id));
+  const idsOrdens = new Set(prep.ordensAntigas.map(o => o.id));
+  const idsCaixas = new Set(prep.caixasAntigos.map(c => c.id));
+
+  db.vendas = (db.vendas || []).filter(v => !idsVendas.has(v.id));
+  db.ordens = (db.ordens || []).filter(o => !idsOrdens.has(o.id));
+  db.caixas = (db.caixas || []).filter(c => !idsCaixas.has(c.id));
+  db.movimentacoes = (db.movimentacoes || []).filter(m => !prep.movAntigas.includes(m));
+  db.despesas = (db.despesas || []).filter(d => !prep.despAntigas.includes(d));
+
+  db.ultimoArquivamento = new Date().toISOString();
+  window._avisouTamanhoNuvem = false; // libera o aviso de novo se o tamanho voltar a crescer
+
+  saveDBAgora();
+
+  setTimeout(() => {
+    const depoisKB = _tamanhoAtualKB();
+    toast(`🗄️ Arquivamento concluído: ${prep.total} registro(s) removidos. ${antesKB}KB → ~${depoisKB}KB`);
+    renderConfigArquivamento();
+  }, 300);
+}
+
+// Lembrete leve (uma vez por sessão) pro admin não esquecer de arquivar
+// todo mês. Só aparece se já faz mais de 30 dias do último arquivamento
+// (ou nunca arquivou) e já existe algo arquivável.
+function _lembrarArquivamentoSeNecessario() {
+  if (window.currentUserRole !== 'admin') return;
+  const ultimo = db.ultimoArquivamento ? new Date(db.ultimoArquivamento) : null;
+  const diasDesde = ultimo ? (Date.now() - ultimo.getTime()) / 86400000 : Infinity;
+  if (diasDesde < 30) return;
+  const prep = prepararArquivamento();
+  if (prep.total === 0) return;
+  setTimeout(() => {
+    toast(`🗄️ ${prep.total} registro(s) prontos para arquivar (Config > Arquivamento de Dados)`, 'error');
+  }, 2500);
 }
 
 // ===== NAVIGATION =====
@@ -3393,6 +3543,22 @@ function simularTaxa() {
 function loadConfig() {
   document.getElementById('cfg-nome').value = db.config.nome||'';
   document.getElementById('cfg-estq-min').value = db.config.estqMin||3;
+  renderConfigArquivamento();
+}
+
+function renderConfigArquivamento() {
+  const elTam = document.getElementById('cfg-tamanho-nuvem');
+  const elQtd = document.getElementById('cfg-qtd-arquivavel');
+  const elUlt = document.getElementById('cfg-ultimo-arquivamento');
+  if (!elTam) return;
+  const kb = _tamanhoAtualKB();
+  elTam.textContent = kb + 'KB';
+  elTam.style.color = kb > 1024 ? 'var(--red)' : (kb > 700 ? 'var(--amber)' : 'var(--green)');
+  const prep = prepararArquivamento();
+  elQtd.textContent = prep.total;
+  elUlt.textContent = db.ultimoArquivamento
+    ? new Date(db.ultimoArquivamento).toLocaleString('pt-BR')
+    : 'Nunca arquivado';
 }
 
 function salvarConfig() {
