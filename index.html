@@ -54,7 +54,7 @@
   // ele lê normalmente — e na primeira vez que salvar, migra sozinho para
   // o novo formato em fatias.
   const CHUNK_SIZE = 150;
-  const CHUNKED_KEYS = ['vendas', 'ordens', 'movimentacoes', 'despesas', 'caixas'];
+  const CHUNKED_KEYS = ['vendas', 'ordens', 'movimentacoes', 'despesas'];
 
   window._fbSave = async function(data) {
     try {
@@ -83,6 +83,14 @@
           escritas.push(deleteDoc(doc(firestore, 'esccell_data', `${key}_${i}`)));
         }
       });
+
+      // Limpeza única: a função de Caixa foi removida do sistema. Apaga
+      // quaisquer fatias antigas 'caixas_N' que ainda existam na nuvem de
+      // quando essa função existia, já que os dados não são mais usados.
+      const anteriorCaixas = chunkCountsAnterior.caixas || 0;
+      for (let i = 0; i < anteriorCaixas; i++) {
+        escritas.push(deleteDoc(doc(firestore, 'esccell_data', `caixas_${i}`)));
+      }
 
       meta._chunkCounts = chunkCounts;
       meta._formatoFatiado = true;
@@ -576,9 +584,6 @@ tbody tr:last-child td { border-bottom:none; }
       <div class="nav-section">Financeiro</div>
       <a onclick="navigate('financeiro')" id="nav-financeiro" data-page="financeiro">
         <span class="ic">💰</span><span>Financeiro</span>
-      </a>
-      <a onclick="navigate('caixa')" id="nav-caixa" data-page="caixa">
-        <span class="ic">🏦</span><span>Caixa</span>
       </a>
       <a onclick="navigate('fechamento')" id="nav-fechamento" data-page="fechamento">
         <span class="ic">📅</span><span>Fechamento</span>
@@ -1135,133 +1140,6 @@ tbody tr:last-child td { border-bottom:none; }
 
     </div>
 
-    <!-- ===== CAIXA ===== -->
-    <div class="page" id="page-caixa">
-
-      <!-- STATUS DO CAIXA -->
-      <div id="caixa-status-bar" style="margin-bottom:20px"></div>
-
-      <!-- ABRIR CAIXA -->
-      <div id="caixa-abrir-section">
-        <div class="card" style="max-width:480px;margin:0 auto">
-          <div class="card-header">
-            <span class="card-title">🔓 Abrir Caixa</span>
-          </div>
-          <div class="modal-body" style="padding:0 0 8px">
-            <div class="form-grid" style="grid-template-columns:1fr">
-              <div class="form-group">
-                <label>Saldo Inicial (troco em espécie) — R$</label>
-                <input type="number" id="caixa-saldo-inicial" step="0.01" min="0" placeholder="0.00" value="0">
-              </div>
-              <div class="form-group">
-                <label>Observação (opcional)</label>
-                <input type="text" id="caixa-obs-abertura" placeholder="Ex: Abertura do dia">
-              </div>
-            </div>
-            <div style="margin-top:16px">
-              <button class="btn btn-success" onclick="abrirCaixa()" style="width:100%;justify-content:center;font-size:14px;padding:12px">
-                🔓 Abrir Caixa Agora
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- CAIXA ABERTO -->
-      <div id="caixa-aberto-section" style="display:none">
-        <div class="stats-grid mb16" id="caixa-stats"></div>
-
-        <div class="grid-2 mb16">
-          <!-- Resumo por pagamento -->
-          <div class="card">
-            <div class="card-header"><span class="card-title">💳 Entradas por Forma de Pagamento</span></div>
-            <div id="caixa-por-pagamento"></div>
-          </div>
-          <!-- Sangria / Reforço -->
-          <div class="card">
-            <div class="card-header"><span class="card-title">💸 Sangria / Reforço de Caixa</span></div>
-            <div style="padding-top:4px">
-              <div class="form-grid" style="grid-template-columns:1fr 1fr">
-                <div class="form-group">
-                  <label>Tipo</label>
-                  <select id="mov-tipo" onchange="toggleMovTipo()">
-                    <option value="reforco">🟢 Reforço (entrada)</option>
-                    <option value="sangria">🔴 Sangria (saída)</option>
-                    <option value="saldo">🔵 Saldo de Caixa</option>
-                  </select>
-                </div>
-                <div class="form-group">
-                  <label>Valor (R$)</label>
-                  <input type="number" id="mov-valor" step="0.01" min="0" placeholder="0.00">
-                </div>
-              </div>
-              <div class="form-group" style="margin-top:8px">
-                <label>Motivo</label>
-                <input type="text" id="mov-motivo" placeholder="Ex: Retirada para banco, troco...">
-              </div>
-              <div style="margin-top:12px">
-                <button class="btn btn-primary" onclick="registrarMovCaixa()" style="width:100%;justify-content:center">Registrar</button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Movimentações do caixa -->
-        <div class="card mb16">
-          <div class="card-header">
-            <span class="card-title">📋 Movimentações do Caixa</span>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>Hora</th><th>Tipo</th><th>Descrição</th><th>Valor</th><th>Ação</th></tr></thead>
-              <tbody id="caixa-mov-tbody"></tbody>
-            </table>
-          </div>
-        </div>
-
-        <!-- Fechar caixa -->
-        <div class="card" style="border-color:rgba(239,68,68,0.3)">
-          <div class="card-header">
-            <span class="card-title" style="color:var(--red)">🔒 Fechar Caixa</span>
-          </div>
-          <div style="padding-top:4px">
-            <div class="form-grid" style="grid-template-columns:1fr 1fr">
-              <div class="form-group">
-                <label>Saldo em Espécie Contado (R$)</label>
-                <input type="number" id="caixa-saldo-final" step="0.01" min="0" placeholder="0.00" oninput="calcDiferenca()">
-              </div>
-              <div class="form-group">
-                <label>Diferença</label>
-                <div id="caixa-diferenca" style="padding:9px 12px;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius);font-size:13px;font-family:'JetBrains Mono',monospace;color:var(--text3)">—</div>
-              </div>
-            </div>
-            <div class="form-group" style="margin-top:8px">
-              <label>Observação de Fechamento</label>
-              <input type="text" id="caixa-obs-fechamento" placeholder="Opcional...">
-            </div>
-            <div style="margin-top:12px">
-              <button class="btn btn-danger" onclick="fecharCaixa()" style="width:100%;justify-content:center;font-size:14px;padding:12px">
-                🔒 Fechar Caixa e Gerar Relatório
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- HISTÓRICO DE CAIXAS -->
-      <div class="card" style="margin-top:20px">
-        <div class="card-header">
-          <span class="card-title">🗂️ Histórico de Fechamentos</span>
-        </div>
-        <div class="table-wrap" style="overflow-x:auto;width:100%;-webkit-overflow-scrolling:touch;">
-          <table style="min-width:780px;">
-            <thead><tr><th>Data</th><th>Abertura</th><th>Fechamento</th><th>Saldo Inicial</th><th>Entradas</th><th>Saídas</th><th>Saldo Esperado</th><th>Saldo Contado</th><th>Diferença</th><th>Ações</th></tr></thead>
-            <tbody id="caixa-hist-tbody"></tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-
     <!-- ===== CONFIG ===== -->
     <div class="page" id="page-config">
       <div class="card mb16">
@@ -1671,10 +1549,9 @@ let db = {
   ordens: [],
   movimentacoes: [],
   despesas: [],
-  caixas: [],
   taxas: { debito: 1.5, credito_1x: 2.5, credito_2x: 3.0, credito_3x: 3.3, credito_4x: 3.6, credito_5x: 3.9, credito_6x: 4.2, credito_712: 4.5 },
   config: { nome: 'ESC CELL', estqMin: 3 },
-  nextProdId: 1, nextVendaId: 1, nextOSId: 1, nextCaixaId: 1
+  nextProdId: 1, nextVendaId: 1, nextOSId: 1, nextMovId: 1, nextDespId: 1
 };
 
 let cart = [];
@@ -1730,7 +1607,7 @@ function aplicarRestricoesPerfil() {
   // === FUNCIONÁRIO: aplicar restrições ===
 
   // 1. Oculta itens de menu restritos (Fechamento, Financeiro, Caixa, Config)
-  const navRestritos = ['nav-fechamento', 'nav-financeiro', 'nav-caixa', 'nav-config'];
+  const navRestritos = ['nav-fechamento', 'nav-financeiro', 'nav-config'];
   navRestritos.forEach(id => {
     const el = document.getElementById(id);
     if (el) el.style.display = 'none';
@@ -1829,20 +1706,27 @@ function _applyDefaults() {
     db.taxas.credito_6x = db.taxas.credito_26 || 4.2;
   }
   if (!db.config) db.config = { nome:'ESC CELL', estqMin:3 };
+  if (!db.nextMovId) db.nextMovId = 1;
+  if (!db.nextDespId) db.nextDespId = 1;
 }
 
 // Campos do db que são listas de registros (cada item tem .id).
 // Usados para fundir dados de vários computadores sem se sobrescreverem.
-const _DB_ARRAY_KEYS = ['produtos','vendas','ordens','movimentacoes','despesas','caixas','clientes'];
-const _DB_NEXTID_KEYS = ['nextProdId','nextVendaId','nextOSId'];
+const _DB_ARRAY_KEYS = ['produtos','vendas','ordens','movimentacoes','despesas','clientes'];
+const _DB_NEXTID_KEYS = ['nextProdId','nextVendaId','nextOSId','nextMovId','nextDespId'];
 
 // Funde duas listas pelo campo id. Em caso de conflito de id, prioriza 'a'.
+// Itens sem id (registros antigos, de antes desse campo existir) usam o
+// próprio conteúdo como chave — assim, duas cópias idênticas do mesmo
+// registro (ex: vindas da nuvem e do local) se fundem em uma só, em vez de
+// serem tratadas como "sempre novas" e duplicadas a cada salvamento.
 function _mergeArraysById(a, b) {
   if (!Array.isArray(a)) a = [];
   if (!Array.isArray(b)) b = [];
   const map = new Map();
-  b.forEach(item => { if (item && item.id != null) map.set(item.id, item); else if (item) map.set(Symbol(), item); });
-  a.forEach(item => { if (item && item.id != null) map.set(item.id, item); else if (item) map.set(Symbol(), item); });
+  const chave = item => item.id != null ? item.id : ('__semid__' + _chaveRegistro(item));
+  b.forEach(item => { if (item) map.set(chave(item), item); });
+  a.forEach(item => { if (item) map.set(chave(item), item); });
   return [...map.values()];
 }
 
@@ -1875,7 +1759,6 @@ function _aplicarExclusoesPendentes(excl) {
   if (!excl) return;
   if (excl.vendas)   db.vendas         = (db.vendas || []).filter(v => !excl.vendas.has(v.id));
   if (excl.ordens)   db.ordens         = (db.ordens || []).filter(o => !excl.ordens.has(o.id));
-  if (excl.caixas)   db.caixas         = (db.caixas || []).filter(c => !excl.caixas.has(c.id));
   if (excl.movKeys)  db.movimentacoes  = (db.movimentacoes || []).filter(m => !excl.movKeys.has(_chaveRegistro(m)));
   if (excl.despKeys) db.despesas       = (db.despesas || []).filter(d => !excl.despKeys.has(_chaveRegistro(d)));
 }
@@ -1943,6 +1826,12 @@ function loadDB() {
           toast('☁️ Dados sincronizados com a nuvem');
           _primeiraSync = false;
           _lembrarArquivamentoSeNecessario();
+          // Limpeza única: a fusão acima acabou de eliminar duplicatas
+          // acumuladas por um bug antigo (registros sem id sendo tratados
+          // como sempre novos a cada salvamento). Salva agora pra gravar
+          // essa versão já limpa de volta na nuvem, em vez de esperar a
+          // próxima ação do usuário.
+          setTimeout(() => { saveDBAgora(); }, 1500);
         } else {
           toast('🔄 Dashboard atualizado em tempo real');
         }
@@ -1992,7 +1881,7 @@ async function flushToFirebase() {
     // assim, avisa o admin se o volume total estiver crescendo muito, como
     // lembrete de que arquivar de vez em quando ajuda a manter o app ágil.
     try {
-      const totalRegistros = (db.vendas?.length||0) + (db.ordens?.length||0) + (db.movimentacoes?.length||0) + (db.despesas?.length||0) + (db.caixas?.length||0);
+      const totalRegistros = (db.vendas?.length||0) + (db.ordens?.length||0) + (db.movimentacoes?.length||0) + (db.despesas?.length||0);
       if (totalRegistros > 8000 && !window._avisouTamanhoNuvem && window.currentUserRole === 'admin') {
         window._avisouTamanhoNuvem = true;
         toast(`ℹ️ O banco já tem ${totalRegistros} registros. Considere arquivar dados antigos em Config para manter o app rápido.`);
@@ -2041,11 +1930,9 @@ function prepararArquivamento() {
   const ordensAntigas = (db.ordens || []).filter(o => o.status === 'entregue' && o.data && new Date(o.data) < corte);
   const movAntigas    = (db.movimentacoes || []).filter(m => m.data && new Date(m.data) < corte);
   const despAntigas   = (db.despesas || []).filter(d => d.data && new Date(d.data) < corte);
-  // Só caixas já fechados; um caixa aberto nunca é arquivado.
-  const caixasAntigos = (db.caixas || []).filter(c => c.status === 'fechado' && c.fechamento && new Date(c.fechamento) < corte);
 
-  const total = vendasAntigas.length + ordensAntigas.length + movAntigas.length + despAntigas.length + caixasAntigos.length;
-  return { corte, vendasAntigas, ordensAntigas, movAntigas, despAntigas, caixasAntigos, total };
+  const total = vendasAntigas.length + ordensAntigas.length + movAntigas.length + despAntigas.length;
+  return { corte, vendasAntigas, ordensAntigas, movAntigas, despAntigas, total };
 }
 
 function arquivarDadosAntigos() {
@@ -2055,8 +1942,9 @@ function arquivarDadosAntigos() {
     return;
   }
   const dataCorteTxt = prep.corte.toLocaleDateString('pt-BR');
-  const msg = `Isso vai baixar um arquivo com ${prep.total} registro(s) anteriores a ${dataCorteTxt} e REMOVÊ-LOS do sistema (nuvem e local). Digite a senha de admin para confirmar.`;
-  pedirSenhaAdmin(msg, () => _executarArquivamento(prep));
+  const ok = confirm(`Isso vai baixar um arquivo com ${prep.total} registro(s) anteriores a ${dataCorteTxt} e REMOVÊ-LOS do sistema (nuvem e local). Deseja continuar?`);
+  if (!ok) return;
+  _executarArquivamento(prep);
 }
 
 function _baixarArquivo(blob, nomeArquivo) {
@@ -2079,8 +1967,7 @@ async function _executarArquivamento(prep) {
     vendas: prep.vendasAntigas,
     ordens: prep.ordensAntigas,
     movimentacoes: prep.movAntigas,
-    despesas: prep.despAntigas,
-    caixas: prep.caixasAntigos
+    despesas: prep.despAntigas
   };
 
   // Backup completo e fiel em JSON (pra reimportar se precisar no futuro)
@@ -2109,11 +1996,9 @@ async function _executarArquivamento(prep) {
   // Remove do banco ativo apenas o que acabou de ser arquivado
   const idsVendas = new Set(prep.vendasAntigas.map(v => v.id));
   const idsOrdens = new Set(prep.ordensAntigas.map(o => o.id));
-  const idsCaixas = new Set(prep.caixasAntigos.map(c => c.id));
 
   db.vendas = (db.vendas || []).filter(v => !idsVendas.has(v.id));
   db.ordens = (db.ordens || []).filter(o => !idsOrdens.has(o.id));
-  db.caixas = (db.caixas || []).filter(c => !idsCaixas.has(c.id));
   db.movimentacoes = (db.movimentacoes || []).filter(m => !prep.movAntigas.includes(m));
   db.despesas = (db.despesas || []).filter(d => !prep.despAntigas.includes(d));
 
@@ -2125,7 +2010,6 @@ async function _executarArquivamento(prep) {
   window._exclusoesPendentes = {
     vendas: idsVendas,
     ordens: idsOrdens,
-    caixas: idsCaixas,
     movKeys: new Set(prep.movAntigas.map(_chaveRegistro)),
     despKeys: new Set(prep.despAntigas.map(_chaveRegistro))
   };
@@ -2160,20 +2044,20 @@ function _lembrarArquivamentoSeNecessario() {
 }
 
 // ===== NAVIGATION =====
-const pages = ['dashboard','pdv','vendas','produtos','manutencao','financeiro','caixa','fechamento','config'];
+const pages = ['dashboard','pdv','vendas','produtos','manutencao','financeiro','fechamento','config'];
 const pageTitles = {
   dashboard:'Dashboard', pdv:'PDV — Caixa', vendas:'Histórico de Vendas',
   produtos:'Produtos / Estoque', manutencao:'Manutenção / Assistência Técnica',
-  financeiro:'Financeiro', caixa:'Abertura e Fechamento de Caixa', fechamento:'Fechamento Detalhado', config:'Configurações'
+  financeiro:'Financeiro', fechamento:'Fechamento Detalhado', config:'Configurações'
 };
 const topbarActions = {
   dashboard:null, pdv:null, vendas:null, produtos:'+ Produto',
-  manutencao:'+ Nova O.S.', financeiro:null, caixa:null, fechamento:null, config:null
+  manutencao:'+ Nova O.S.', financeiro:null, fechamento:null, config:null
 };
 
 function navigate(page) {
   // Bloqueia páginas restritas para funcionário
-  const paginasRestritasFuncionario = ['fechamento', 'financeiro', 'caixa', 'config'];
+  const paginasRestritasFuncionario = ['fechamento', 'financeiro', 'config'];
   if (!isAdmin() && paginasRestritasFuncionario.includes(page)) {
     toast('⛔ Acesso restrito. Somente administradores.', 'error');
     return;
@@ -2195,7 +2079,6 @@ function navigate(page) {
   if (page === 'manutencao') renderOS();
   if (page === 'vendas') renderVendas();
   if (page === 'financeiro') renderFinanceiro();
-  if (page === 'caixa') renderCaixa();
   if (page === 'fechamento') { const today = new Date().toISOString().slice(0,10); const inp = document.getElementById('fech-data'); if (!inp.value && fechModo === 'dia') inp.value = today; renderFechamento(); }
   if (page === 'config') loadConfig();
 }
@@ -2369,7 +2252,7 @@ function salvarProduto() {
       p.codigo=document.getElementById('prod-codigo').value; p.custo=custo; p.venda=venda; p.qty=qty;
       p.min=parseInt(document.getElementById('prod-min').value)||3;
       p.obs=document.getElementById('prod-obs').value;
-      if (diff !== 0) db.movimentacoes.push({data:new Date().toISOString(),produto:nome,tipo:'ajuste',qty:diff,obs:'Edição manual'});
+      if (diff !== 0) db.movimentacoes.push({id:db.nextMovId++,data:new Date().toISOString(),produto:nome,tipo:'ajuste',qty:diff,obs:'Edição manual'});
     }
   } else {
     const id = db.nextProdId++;
@@ -2380,7 +2263,7 @@ function salvarProduto() {
       min:parseInt(document.getElementById('prod-min').value)||3,
       obs:document.getElementById('prod-obs').value
     });
-    if (qty > 0) db.movimentacoes.push({data:new Date().toISOString(),produto:nome,tipo:'entrada',qty,obs:'Cadastro inicial'});
+    if (qty > 0) db.movimentacoes.push({id:db.nextMovId++,data:new Date().toISOString(),produto:nome,tipo:'entrada',qty,obs:'Cadastro inicial'});
   }
   saveDB(); closeModal('modal-produto'); renderProdutos();
   toast(editingProdId?'Produto atualizado!':'Produto cadastrado!');
@@ -2800,7 +2683,7 @@ function confirmarPagamento() {
     const p = db.produtos.find(x=>x.id===ci.id);
     if (p) {
       p.qty = Math.max(0, p.qty - ci.qty);
-      db.movimentacoes.push({data:new Date().toISOString(),produto:p.nome,tipo:'saída',qty:ci.qty,obs:`Venda #${db.nextVendaId}`});
+      db.movimentacoes.push({id:db.nextMovId++,data:new Date().toISOString(),produto:p.nome,tipo:'saída',qty:ci.qty,obs:`Venda #${db.nextVendaId}`});
     }
   });
 
@@ -3129,7 +3012,7 @@ function registrarEntrada() {
   const custo = parseMoney(document.getElementById('entrada-custo').value);
   if (custo > 0) p.custo = custo;
   db.movimentacoes.push({
-    data: new Date().toISOString(), produto: p.nome, tipo:'entrada', qty,
+    id: db.nextMovId++, data: new Date().toISOString(), produto: p.nome, tipo:'entrada', qty,
     obs: document.getElementById('entrada-obs').value || document.getElementById('entrada-fornecedor').value || 'Entrada manual'
   });
   saveDB(); renderEstoque(); renderMovimentacoes(); toast(`+${qty} unidades adicionadas a ${p.nome}`);
@@ -3607,7 +3490,7 @@ function registrarDespesa() {
   const data = document.getElementById('desp-data').value;
   if (!desc || valor<=0) return toast('Preencha descrição e valor','error');
   db.despesas.push({
-    desc, valor, cat: document.getElementById('desp-cat').value,
+    id: db.nextDespId++, desc, valor, cat: document.getElementById('desp-cat').value,
     data: data ? new Date(data+'T12:00:00').toISOString() : new Date().toISOString()
   });
   saveDB(); renderDespesas(); renderFinanceiro();
@@ -4419,322 +4302,6 @@ function aplicarTema() {
     if (btn) btn.textContent = '☀️ Modo Claro';
   }
 }
-
-// ===== CAIXA =====
-function getCaixaAberto() {
-  if (!db.caixas) db.caixas = [];
-  return db.caixas.find(c => c.status === 'aberto') || null;
-}
-
-function abrirCaixa() {
-  if (getCaixaAberto()) return toast('Já existe um caixa aberto!', 'error');
-  const saldo = parseFloat(document.getElementById('caixa-saldo-inicial').value) || 0;
-  const obs = document.getElementById('caixa-obs-abertura').value.trim();
-  if (!db.caixas) db.caixas = [];
-  if (!db.nextCaixaId) db.nextCaixaId = 1;
-  const caixa = {
-    id: db.nextCaixaId++,
-    status: 'aberto',
-    abertura: new Date().toISOString(),
-    fechamento: null,
-    saldoInicial: saldo,
-    saldoFinal: null,
-    obsAbertura: obs,
-    obsFechamento: '',
-    movimentacoes: [{ hora: new Date().toISOString(), tipo: 'abertura', desc: obs || 'Abertura do caixa', valor: saldo }]
-  };
-  db.caixas.push(caixa);
-  saveDB();
-  toast('✅ Caixa aberto com sucesso!');
-  renderCaixa();
-}
-
-function registrarMovCaixa() {
-  const caixa = getCaixaAberto();
-  if (!caixa) return toast('Nenhum caixa aberto', 'error');
-  const tipo = document.getElementById('mov-tipo').value;
-  const valor = parseFloat(document.getElementById('mov-valor').value) || 0;
-  const motivo = document.getElementById('mov-motivo').value.trim();
-  if (valor <= 0) return toast('Informe um valor válido', 'error');
-  if (!motivo) return toast('Informe o motivo', 'error');
-  caixa.movimentacoes.push({ hora: new Date().toISOString(), tipo, desc: motivo, valor });
-  saveDB();
-  document.getElementById('mov-valor').value = '';
-  document.getElementById('mov-motivo').value = '';
-  const toastMsg = tipo === 'sangria' ? '🔴 Sangria registrada' : tipo === 'saldo' ? '🔵 Saldo de caixa registrado' : '🟢 Reforço registrado';
-  toast(toastMsg);
-  renderCaixa();
-}
-
-function excluirMovCaixa(idx) {
-  const caixa = getCaixaAberto();
-  if (!caixa) return;
-  const m = caixa.movimentacoes[idx];
-  if (!m || m.tipo === 'abertura' || m.tipo === 'fechamento') return toast('Esta movimentação não pode ser excluída', 'error');
-  if (!confirm(`Excluir movimentação "${m.desc}" (${fmt(m.valor)})?`)) return;
-  caixa.movimentacoes.splice(idx, 1);
-  saveDB();
-  toast('🗑️ Movimentação excluída');
-  renderCaixa();
-}
-
-function fecharCaixa() {
-  const caixa = getCaixaAberto();
-  if (!caixa) return toast('Nenhum caixa aberto', 'error');
-  const saldoFinal = parseFloat(document.getElementById('caixa-saldo-final').value);
-  if (isNaN(saldoFinal) || saldoFinal < 0) return toast('Informe o saldo contado', 'error');
-  const obs = document.getElementById('caixa-obs-fechamento').value.trim();
-  caixa.status = 'fechado';
-  caixa.fechamento = new Date().toISOString();
-  caixa.saldoFinal = saldoFinal;
-  caixa.obsFechamento = obs;
-  caixa.movimentacoes.push({ hora: new Date().toISOString(), tipo: 'fechamento', desc: obs || 'Fechamento do caixa', valor: saldoFinal });
-  saveDB();
-  toast('🔒 Caixa fechado com sucesso!');
-  imprimirRelatorioCaixa(caixa);
-  renderCaixa();
-}
-
-function calcDiferenca() {
-  const caixa = getCaixaAberto();
-  if (!caixa) return;
-  const contado = parseFloat(document.getElementById('caixa-saldo-final').value) || 0;
-  const esperado = calcSaldoEsperadoCaixa(caixa);
-  const diff = contado - esperado;
-  const el = document.getElementById('caixa-diferenca');
-  el.textContent = fmt(diff);
-  el.style.color = diff === 0 ? 'var(--green)' : diff > 0 ? 'var(--amber)' : 'var(--red)';
-}
-
-function calcSaldoEsperadoCaixa(caixa) {
-  // saldo inicial + reforços - sangrias + vendas dinheiro/pix do período
-  let saldo = caixa.saldoInicial;
-  (caixa.movimentacoes || []).forEach(m => {
-    if (m.tipo === 'reforco') saldo += m.valor;
-    if (m.tipo === 'sangria') saldo -= m.valor;
-  });
-  // vendas em dinheiro/pix realizadas enquanto o caixa estava aberto
-  const aberturaTime = new Date(caixa.abertura).getTime();
-  const fechamentoTime = caixa.fechamento ? new Date(caixa.fechamento).getTime() : Date.now();
-  db.vendas.forEach(v => {
-    const t = new Date(v.data).getTime();
-    if (t < aberturaTime || t > fechamentoTime) return;
-    if (v.pagamento === 'dinheiro') {
-      // venda dinheiro: o caixa fica com o total (troco já foi devolvido ao cliente)
-      saldo += v.total;
-    } else if (v.pagamento === 'pix') {
-      // pix não afeta o caixa físico
-    } else if (v.pagamento === 'misto' && v.pagamentos && v.pagamentos.length) {
-      // pagamento misto: soma apenas a parte em dinheiro
-      const parteDinheiro = v.pagamentos.filter(p => p.tipo === 'dinheiro').reduce((s, p) => s + p.valor, 0);
-      saldo += parteDinheiro;
-      if (v.troco) saldo -= v.troco;
-    }
-  });
-  db.ordens.forEach(o => {
-    if (!o.data || o.status !== 'entregue') return;
-    const t = new Date(o.data).getTime();
-    if (t < aberturaTime || t > fechamentoTime) return;
-    const val = parseFloat(o.valor) || 0;
-    // multipay: soma só a parte em dinheiro de cada forma
-    if (o.pagamentos && o.pagamentos.length > 1) {
-      const parteDinheiro = o.pagamentos.filter(p => p.tipo === 'dinheiro').reduce((s, p) => s + p.valor, 0);
-      saldo += parteDinheiro;
-    } else if (o.pagamento === 'dinheiro') {
-      saldo += val;
-    }
-    // pix e cartão não entram no saldo físico do caixa
-  });
-  return saldo;
-}
-
-function calcEntradasCaixaPorPag(caixa) {
-  const aberturaTime = new Date(caixa.abertura).getTime();
-  const fechamentoTime = caixa.fechamento ? new Date(caixa.fechamento).getTime() : Date.now();
-  const pags = { dinheiro: 0, pix: 0, debito: 0, credito: 0 };
-  db.vendas.forEach(v => {
-    const t = new Date(v.data).getTime();
-    if (t < aberturaTime || t > fechamentoTime) return;
-    if (v.pagamento === 'misto' && v.pagamentos && v.pagamentos.length) {
-      // pagamento misto: separa por tipo
-      v.pagamentos.forEach(p => {
-        if (pags[p.tipo] !== undefined) pags[p.tipo] += p.valor;
-        else pags['dinheiro'] += p.valor;
-      });
-      if (v.troco) pags['dinheiro'] -= v.troco;
-    } else {
-      const p = v.pagamento;
-      if (pags[p] !== undefined) {
-        pags[p] += v.total;
-      } else {
-        pags['dinheiro'] += v.total;
-      }
-    }
-  });
-  db.ordens.forEach(o => {
-    if (!o.data || o.status !== 'entregue') return;
-    const t = new Date(o.data).getTime();
-    if (t < aberturaTime || t > fechamentoTime) return;
-    if (o.pagamentos && o.pagamentos.length > 1) {
-      // multipay: distribui cada parte no tipo correto
-      o.pagamentos.forEach(p => {
-        if (pags[p.tipo] !== undefined) pags[p.tipo] += p.valor;
-        else pags['dinheiro'] += p.valor;
-      });
-    } else {
-      const p = o.pagamento || 'dinheiro';
-      if (pags[p] !== undefined) pags[p] += parseFloat(o.valor) || 0;
-      else pags['dinheiro'] += parseFloat(o.valor) || 0;
-    }
-  });
-  return pags;
-}
-
-function renderCaixa() {
-  if (!db.caixas) db.caixas = [];
-  const caixa = getCaixaAberto();
-  const statusBar = document.getElementById('caixa-status-bar');
-  const abrirSection = document.getElementById('caixa-abrir-section');
-  const abertoSection = document.getElementById('caixa-aberto-section');
-
-  if (caixa) {
-    abrirSection.style.display = 'none';
-    abertoSection.style.display = 'block';
-    statusBar.innerHTML = `<div class="alert alert-green" style="margin-bottom:0">
-      🟢 <strong>Caixa Aberto</strong> — Desde ${new Date(caixa.abertura).toLocaleString('pt-BR')}
-      &nbsp;|&nbsp; Saldo inicial: <strong>${fmt(caixa.saldoInicial)}</strong>
-      &nbsp;|&nbsp; Saldo esperado (espécie): <strong id="saldo-esp-live">${fmt(calcSaldoEsperadoCaixa(caixa))}</strong>
-    </div>`;
-
-    // Stats
-    const pags = calcEntradasCaixaPorPag(caixa);
-    const totalEntradas = Object.values(pags).reduce((a, b) => a + b, 0);
-    const sangrias = (caixa.movimentacoes || []).filter(m => m.tipo === 'sangria').reduce((s, m) => s + m.valor, 0);
-    const reforcos = (caixa.movimentacoes || []).filter(m => m.tipo === 'reforco').reduce((s, m) => s + m.valor, 0);
-    document.getElementById('caixa-stats').innerHTML = `
-      <div class="stat-card stat-green"><div class="stat-label">Total Entradas</div><div class="stat-value">${fmt(totalEntradas)}</div><div class="stat-sub">vendas no período</div></div>
-      <div class="stat-card stat-blue"><div class="stat-label">Saldo Esperado (espécie)</div><div class="stat-value">${fmt(calcSaldoEsperadoCaixa(caixa))}</div><div class="stat-sub">inicial + espécie + reforços - sangrias</div></div>
-      <div class="stat-card"><div class="stat-label">Sangrias</div><div class="stat-value" style="color:var(--red)">${fmt(sangrias)}</div><div class="stat-sub">retiradas do caixa</div></div>
-      <div class="stat-card stat-amber"><div class="stat-label">Reforços</div><div class="stat-value">${fmt(reforcos)}</div><div class="stat-sub">entradas manuais</div></div>
-    `;
-
-    // Por pagamento
-    const labels = { dinheiro: '💵 Dinheiro', pix: '📲 PIX', debito: '💳 Débito', credito: '💳 Crédito' };
-    document.getElementById('caixa-por-pagamento').innerHTML = Object.entries(pags).map(([k, v]) => `
-      <div class="flex-between" style="padding:10px 0;border-bottom:1px solid var(--border)">
-        <span style="font-size:13px">${labels[k] || k}</span>
-        <span class="font-mono" style="font-size:13px;font-weight:600">${fmt(v)}</span>
-      </div>
-    `).join('') + `<div class="flex-between" style="padding:10px 0;font-weight:700"><span>Total</span><span class="font-mono">${fmt(totalEntradas)}</span></div>`;
-
-    // Movimentações
-    const movs = (caixa.movimentacoes || []).slice().reverse();
-    const tipoLabel = { abertura: '<span class="badge badge-green">Abertura</span>', fechamento: '<span class="badge badge-blue">Fechamento</span>', sangria: '<span class="badge badge-red">Sangria</span>', reforco: '<span class="badge badge-amber">Reforço</span>', saldo: '<span class="badge badge-purple">Saldo de Caixa</span>' };
-    document.getElementById('caixa-mov-tbody').innerHTML = movs.map((m, revIdx) => {
-      const realIdx = (caixa.movimentacoes.length - 1) - revIdx;
-      const canDelete = m.tipo !== 'abertura' && m.tipo !== 'fechamento';
-      const deleteBtn = canDelete ? `<button class="btn btn-ghost btn-sm" onclick="excluirMovCaixa(${realIdx})" title="Excluir" style="color:var(--red);border-color:rgba(239,68,68,0.3)">🗑️</button>` : '<span style="color:var(--text3);font-size:11px">—</span>';
-      const valorColor = m.tipo==='sangria' ? 'var(--red)' : m.tipo==='saldo' ? 'var(--blue)' : 'var(--green)';
-      const valorPrefix = m.tipo==='sangria' ? '- ' : m.tipo==='saldo' ? '' : '+ ';
-      return `<tr>
-        <td class="font-mono" style="font-size:12px">${new Date(m.hora).toLocaleTimeString('pt-BR')}</td>
-        <td>${tipoLabel[m.tipo] || m.tipo}</td>
-        <td style="font-size:13px">${m.desc}</td>
-        <td class="font-mono" style="font-size:13px;color:${valorColor}">${valorPrefix}${fmt(m.valor)}</td>
-        <td>${deleteBtn}</td>
-      </tr>`;
-    }).join('') || '<tr><td colspan="5" style="text-align:center;padding:20px;color:var(--text3)">Nenhuma movimentação</td></tr>';
-
-  } else {
-    abrirSection.style.display = 'block';
-    abertoSection.style.display = 'none';
-    statusBar.innerHTML = `<div class="alert alert-amber" style="margin-bottom:0">🔒 Caixa fechado. Abra o caixa para iniciar as operações do dia.</div>`;
-  }
-
-  // Histórico
-  const fechados = db.caixas.filter(c => c.status === 'fechado').slice().reverse();
-  const hist = document.getElementById('caixa-hist-tbody');
-  if (!fechados.length) {
-    hist.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:24px;color:var(--text3)">Nenhum fechamento registrado</td></tr>';
-  } else {
-    hist.innerHTML = fechados.map(c => {
-      const esperado = calcSaldoEsperadoCaixa(c);
-      const diff = (c.saldoFinal ?? 0) - esperado;
-      const sangrias = (c.movimentacoes || []).filter(m => m.tipo === 'sangria').reduce((s, m) => s + m.valor, 0);
-      const reforcos = (c.movimentacoes || []).filter(m => m.tipo === 'reforco').reduce((s, m) => s + m.valor, 0);
-      const pags = calcEntradasCaixaPorPag(c);
-      const entradas = Object.values(pags).reduce((a, b) => a + b, 0);
-      return `<tr>
-        <td style="font-size:12px">${new Date(c.abertura).toLocaleDateString('pt-BR')}</td>
-        <td class="font-mono" style="font-size:11px">${new Date(c.abertura).toLocaleTimeString('pt-BR')}</td>
-        <td class="font-mono" style="font-size:11px">${c.fechamento ? new Date(c.fechamento).toLocaleTimeString('pt-BR') : '—'}</td>
-        <td class="font-mono">${fmt(c.saldoInicial)}</td>
-        <td class="font-mono" style="color:var(--green)">${fmt(entradas)}</td>
-        <td class="font-mono" style="color:var(--red)">${fmt(sangrias)}</td>
-        <td class="font-mono">${fmt(esperado)}</td>
-        <td class="font-mono">${fmt(c.saldoFinal ?? 0)}</td>
-        <td class="font-mono" style="color:${diff===0?'var(--green)':diff>0?'var(--amber)':'var(--red)'}">${diff>=0?'+':''}${fmt(diff)}</td>
-        <td><button class="btn btn-ghost btn-sm" onclick="imprimirRelatorioCaixa(db.caixas.find(x=>x.id===${c.id}))">🖨️</button></td>
-      </tr>`;
-    }).join('');
-  }
-}
-
-function imprimirRelatorioCaixa(caixa) {
-  const pags = calcEntradasCaixaPorPag(caixa);
-  const totalEntradas = Object.values(pags).reduce((a, b) => a + b, 0);
-  const sangrias = (caixa.movimentacoes || []).filter(m => m.tipo === 'sangria').reduce((s, m) => s + m.valor, 0);
-  const reforcos = (caixa.movimentacoes || []).filter(m => m.tipo === 'reforco').reduce((s, m) => s + m.valor, 0);
-  const esperado = calcSaldoEsperadoCaixa(caixa);
-  const diff = (caixa.saldoFinal ?? 0) - esperado;
-  const labels = { dinheiro: 'Dinheiro', pix: 'PIX', debito: 'Débito', credito: 'Crédito' };
-
-  const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">
-  <title>Relatório de Caixa #${caixa.id}</title>
-  <style>
-    body { font-family: 'Courier New', monospace; max-width: 420px; margin: 20px auto; font-size: 13px; color: #111; }
-    h2 { text-align: center; font-size: 16px; margin-bottom: 2px; }
-    .sub { text-align: center; color: #555; font-size: 11px; margin-bottom: 12px; }
-    hr { border: none; border-top: 1px dashed #999; margin: 10px 0; }
-    .row { display: flex; justify-content: space-between; padding: 2px 0; }
-    .bold { font-weight: bold; }
-    .green { color: #16a34a; }
-    .red { color: #dc2626; }
-    .amber { color: #d97706; }
-    .center { text-align:center; }
-    @media print { body { margin: 0; } }
-  </style></head><body>
-  <h2>ESC CELL</h2>
-  <div class="sub">Relatório de Fechamento de Caixa</div>
-  <hr>
-  <div class="row"><span>Caixa #</span><span>${caixa.id}</span></div>
-  <div class="row"><span>Abertura</span><span>${new Date(caixa.abertura).toLocaleString('pt-BR')}</span></div>
-  <div class="row"><span>Fechamento</span><span>${caixa.fechamento ? new Date(caixa.fechamento).toLocaleString('pt-BR') : '—'}</span></div>
-  <hr>
-  <div class="row bold"><span>Saldo Inicial</span><span>${fmt(caixa.saldoInicial)}</span></div>
-  <hr>
-  <div class="row bold"><span colspan="2">ENTRADAS POR PAGAMENTO</span></div>
-  ${Object.entries(pags).map(([k, v]) => `<div class="row"><span>${labels[k] || k}</span><span>${fmt(v)}</span></div>`).join('')}
-  <div class="row bold"><span>Total Entradas</span><span class="green">${fmt(totalEntradas)}</span></div>
-  <hr>
-  <div class="row"><span>Reforços</span><span class="green">+ ${fmt(reforcos)}</span></div>
-  <div class="row"><span>Sangrias</span><span class="red">- ${fmt(sangrias)}</span></div>
-  <hr>
-  <div class="row bold"><span>Saldo Esperado (espécie)</span><span>${fmt(esperado)}</span></div>
-  <div class="row bold"><span>Saldo Contado</span><span>${fmt(caixa.saldoFinal ?? 0)}</span></div>
-  <div class="row bold"><span>Diferença</span><span class="${diff===0?'green':diff>0?'amber':'red'}">${diff>=0?'+':''}${fmt(diff)}</span></div>
-  <hr>
-  ${caixa.obsFechamento ? `<div class="row"><span>Obs:</span><span>${caixa.obsFechamento}</span></div><hr>` : ''}
-  <div class="center" style="font-size:11px;color:#888;margin-top:8px">ESC CELL — Sistema PDV</div>
-  <script>window.onload=()=>window.print();<\/script>
-  </body></html>`;
-
-  const win = window.open('', '_blank', 'width=480,height=640');
-  win.document.write(html);
-  win.document.close();
-}
-
-
 
 // ===== EDITAR VENDA =====
 let evItems = [];
