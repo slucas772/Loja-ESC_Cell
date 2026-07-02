@@ -1606,6 +1606,13 @@ async function carregarSenhaAdmin() {
     const data = await window._fbLoad();
     if (data && data.senhaAdmin) {
       ADMIN_ACTION_PASSWORD = data.senhaAdmin;
+    } else {
+      // Nenhuma senha configurada ainda: define "1234" como padrão inicial
+      // e já salva na nuvem, pra funcionar de primeira. Troque depois em
+      // Configurações > Senha de Administrador.
+      ADMIN_ACTION_PASSWORD = '1234';
+      db.senhaAdmin = '1234';
+      saveDBAgora();
     }
   } catch(e) { console.error('Erro ao carregar senha admin:', e); }
 }
@@ -1767,6 +1774,26 @@ function _mergeDB(local, remote) {
   return merged;
 }
 
+// ===== EXCLUSÕES PENDENTES (evita que registros apagados "voltem" na fusão com a nuvem) =====
+// A fusão acima é uma UNIÃO: qualquer registro que ainda exista na nuvem
+// reaparece, mesmo que tenha sido removido localmente (ex: arquivamento).
+// Por isso, ações que removem registros registram aqui o que deve continuar
+// fora, e essa exclusão é reaplicada depois de toda fusão com a nuvem.
+window._exclusoesPendentes = null;
+
+function _chaveRegistro(o) {
+  try { return JSON.stringify(o); } catch(e) { return String(o); }
+}
+
+function _aplicarExclusoesPendentes(excl) {
+  if (!excl) return;
+  if (excl.vendas)   db.vendas         = (db.vendas || []).filter(v => !excl.vendas.has(v.id));
+  if (excl.ordens)   db.ordens         = (db.ordens || []).filter(o => !excl.ordens.has(o.id));
+  if (excl.caixas)   db.caixas         = (db.caixas || []).filter(c => !excl.caixas.has(c.id));
+  if (excl.movKeys)  db.movimentacoes  = (db.movimentacoes || []).filter(m => !excl.movKeys.has(_chaveRegistro(m)));
+  if (excl.despKeys) db.despesas       = (db.despesas || []).filter(d => !excl.despKeys.has(_chaveRegistro(d)));
+}
+
 // Salva no localStorage sem nunca travar o resto do código.
 // Em vez de esperar o erro de quota acontecer, já guarda por padrão só os
 // registros mais recentes de cada lista (isso é só um cache pra abrir rápido —
@@ -1864,6 +1891,7 @@ async function flushToFirebase() {
       const remote = await window._fbLoad();
       if (remote) {
         db = _mergeDB(db, remote);
+        _aplicarExclusoesPendentes(window._exclusoesPendentes);
         _applyDefaults();
         safeSaveLocalStorage(db);
       }
@@ -1890,9 +1918,12 @@ async function flushToFirebase() {
         const pendente = window._snapshotPendente;
         window._snapshotPendente = null;
         db = _mergeDB(db, pendente);
+        _aplicarExclusoesPendentes(window._exclusoesPendentes);
         _applyDefaults();
         safeSaveLocalStorage(db);
       }
+      // Exclusão já foi aplicada nas duas fusões possíveis deste ciclo de salvamento.
+      window._exclusoesPendentes = null;
     }, 3000);
   } catch(e) { console.error('Firebase flush error:', e); }
 }
@@ -1999,6 +2030,16 @@ function _executarArquivamento(prep) {
 
   db.ultimoArquivamento = new Date().toISOString();
   window._avisouTamanhoNuvem = false; // libera o aviso de novo se o tamanho voltar a crescer
+
+  // Registra o que está sendo removido agora, pra não "voltar" quando o
+  // salvamento fundir com a cópia (ainda antiga) que está na nuvem.
+  window._exclusoesPendentes = {
+    vendas: idsVendas,
+    ordens: idsOrdens,
+    caixas: idsCaixas,
+    movKeys: new Set(prep.movAntigas.map(_chaveRegistro)),
+    despKeys: new Set(prep.despAntigas.map(_chaveRegistro))
+  };
 
   saveDBAgora();
 
