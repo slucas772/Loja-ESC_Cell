@@ -1227,7 +1227,27 @@ tbody tr:last-child td { border-bottom:none; }
         </div>
         <button class="btn btn-primary btn-sm" onclick="arquivarDadosAntigos()">🗄️ Arquivar dados com mais de 1 mês</button>
       </div>
-      <div class="card">
+      <div class="card mb16 admin-only-card">
+        <div class="card-header"><span class="card-title">🔑 Senha de Administrador</span></div>
+        <p class="text-muted" style="font-size:13px;margin-bottom:12px">
+          Essa senha é pedida em ações sensíveis (excluir venda, excluir manutenção, arquivar dados antigos).
+          Defina ou troque abaixo.
+        </p>
+        <div class="form-grid" style="margin-bottom:12px">
+          <div class="form-group">
+            <label>Nova senha de admin</label>
+            <input type="password" id="cfg-nova-senha-admin" placeholder="Digite a nova senha">
+          </div>
+          <div class="form-group">
+            <label>Confirmar nova senha</label>
+            <input type="password" id="cfg-confirmar-senha-admin" placeholder="Repita a nova senha"
+              onkeydown="if(event.key==='Enter')salvarSenhaAdmin()">
+          </div>
+        </div>
+        <div id="cfg-senha-admin-status" style="font-size:13px;color:var(--text2);margin-bottom:12px">—</div>
+        <button class="btn btn-primary btn-sm" onclick="salvarSenhaAdmin()">🔑 Salvar senha de admin</button>
+      </div>
+      <div class="card admin-only-card">
         <div class="card-header"><span class="card-title">⚠️ Dados do Sistema</span></div>
         <p class="text-muted" style="font-size:13px;margin-bottom:12px">Os dados são salvos no navegador (localStorage). Exporte regularmente.</p>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -1659,6 +1679,34 @@ function pedirSenhaAdmin(mensagem, callback) {
 function fecharModalSenhaAdmin() {
   document.getElementById('modal-senha-admin').classList.remove('open');
   _adminCallback = null;
+}
+
+// ===== DEFINIR/TROCAR SENHA DE ADMIN (tela de Configurações) =====
+async function salvarSenhaAdmin() {
+  const nova = document.getElementById('cfg-nova-senha-admin').value;
+  const confirmar = document.getElementById('cfg-confirmar-senha-admin').value;
+  const status = document.getElementById('cfg-senha-admin-status');
+
+  if (!nova || nova.length < 4) {
+    toast('A senha precisa ter pelo menos 4 caracteres.', 'error');
+    return;
+  }
+  if (nova !== confirmar) {
+    toast('As senhas não conferem.', 'error');
+    return;
+  }
+
+  db.senhaAdmin = nova;
+  ADMIN_ACTION_PASSWORD = nova; // atualiza em memória na hora, sem precisar recarregar
+  saveDBAgora();
+
+  document.getElementById('cfg-nova-senha-admin').value = '';
+  document.getElementById('cfg-confirmar-senha-admin').value = '';
+  if (status) {
+    status.textContent = '✅ Senha de admin definida e salva na nuvem.';
+    status.style.color = 'var(--green)';
+  }
+  toast('🔑 Senha de admin salva com sucesso!');
 }
 
 async function confirmarSenhaAdmin() {
@@ -3544,6 +3592,17 @@ function loadConfig() {
   document.getElementById('cfg-nome').value = db.config.nome||'';
   document.getElementById('cfg-estq-min').value = db.config.estqMin||3;
   renderConfigArquivamento();
+
+  const status = document.getElementById('cfg-senha-admin-status');
+  if (status) {
+    if (db.senhaAdmin) {
+      status.textContent = '🔒 Já existe uma senha de admin definida. Preencha os campos acima para trocá-la.';
+      status.style.color = 'var(--text2)';
+    } else {
+      status.textContent = '⚠️ Nenhuma senha de admin definida ainda — ações como excluir venda/O.S. e arquivar dados não vão funcionar até você definir uma.';
+      status.style.color = 'var(--amber)';
+    }
+  }
 }
 
 function renderConfigArquivamento() {
