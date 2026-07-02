@@ -7,7 +7,7 @@
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-  import { getFirestore, doc, setDoc, getDoc, addDoc, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+  import { getFirestore, doc, setDoc, getDoc, deleteDoc, addDoc, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
   import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
   const firebaseConfig = {
@@ -36,22 +36,108 @@
     } catch(e) { console.error('Erro ao registrar log:', e); }
   }
 
+  // ── ARMAZENAMENTO EM DOCUMENTOS SEPARADOS (evita o limite de 1MB) ──
+  // O Firestore tem limite rígido de 1MB por documento. Antes, tudo (vendas,
+  // O.S., movimentações, despesas, caixas) vivia num único documento
+  // 'esccell/db', que eventualmente estourava esse limite e passava a
+  // FALHAR silenciosamente ao salvar.
+  //
+  // Agora cada lista grande é dividida em "fatias" (chunks) de no máximo
+  // CHUNK_SIZE registros, salvas como documentos separados na coleção
+  // 'esccell_data' (ex: vendas_0, vendas_1, ordens_0...). O documento
+  // principal 'esccell/db' guarda só os dados leves (config, taxas,
+  // produtos, próximos IDs, senha admin) + um índice (_chunkCounts) dizendo
+  // quantas fatias existem de cada lista.
+  //
+  // Isso é compatível com o formato antigo: se o app encontrar um documento
+  // no formato antigo (sem _chunkCounts, com as listas ainda dentro dele),
+  // ele lê normalmente — e na primeira vez que salvar, migra sozinho para
+  // o novo formato em fatias.
+  const CHUNK_SIZE = 150;
+  const CHUNKED_KEYS = ['vendas', 'ordens', 'movimentacoes', 'despesas', 'caixas'];
+
   window._fbSave = async function(data) {
-    try { await setDoc(doc(firestore, 'esccell', 'db'), data); }
-    catch(e) { console.error('Firebase save error:', e); }
+    try {
+      const meta = { ...data };
+      const chunkCounts = {};
+      const escritas = [];
+
+      CHUNKED_KEYS.forEach(key => {
+        const arr = Array.isArray(data[key]) ? data[key] : [];
+        delete meta[key]; // não guarda a lista grande dentro do doc principal
+        const numChunks = arr.length === 0 ? 0 : Math.ceil(arr.length / CHUNK_SIZE);
+        chunkCounts[key] = numChunks;
+        for (let i = 0; i < numChunks; i++) {
+          const fatia = arr.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+          escritas.push(setDoc(doc(firestore, 'esccell_data', `${key}_${i}`), { items: fatia }));
+        }
+      });
+
+      // Remove fatias antigas que sobraram (ex: depois de um arquivamento,
+      // a lista fica menor e algumas fatias deixam de existir).
+      const chunkCountsAnterior = window._ultimoChunkCounts || {};
+      CHUNKED_KEYS.forEach(key => {
+        const anterior = chunkCountsAnterior[key] || 0;
+        const atual = chunkCounts[key] || 0;
+        for (let i = atual; i < anterior; i++) {
+          escritas.push(deleteDoc(doc(firestore, 'esccell_data', `${key}_${i}`)));
+        }
+      });
+
+      meta._chunkCounts = chunkCounts;
+      meta._formatoFatiado = true;
+      escritas.push(setDoc(doc(firestore, 'esccell', 'db'), meta));
+
+      await Promise.all(escritas);
+      window._ultimoChunkCounts = chunkCounts;
+      return true;
+    } catch(e) { console.error('Firebase save error:', e); return false; }
   };
 
   window._fbLoad = async function() {
     try {
       const snap = await getDoc(doc(firestore, 'esccell', 'db'));
-      return snap.exists() ? snap.data() : null;
+      if (!snap.exists()) return null;
+      const meta = snap.data();
+      const chunkCounts = meta._chunkCounts || {};
+      const resultado = { ...meta };
+
+      const leituras = [];
+      CHUNKED_KEYS.forEach(key => {
+        if (meta._formatoFatiado) {
+          // Formato novo: lê as fatias da coleção 'esccell_data'
+          const n = chunkCounts[key] || 0;
+          const promessasChave = [];
+          for (let i = 0; i < n; i++) {
+            promessasChave.push(getDoc(doc(firestore, 'esccell_data', `${key}_${i}`)));
+          }
+          leituras.push(Promise.all(promessasChave).then(snaps => {
+            let arr = [];
+            snaps.forEach(s => { if (s.exists() && Array.isArray(s.data().items)) arr = arr.concat(s.data().items); });
+            resultado[key] = arr;
+          }));
+        } else {
+          // Formato antigo (compatibilidade): a lista ainda está inline no doc principal
+          resultado[key] = Array.isArray(meta[key]) ? meta[key] : [];
+        }
+      });
+      await Promise.all(leituras);
+
+      window._ultimoChunkCounts = chunkCounts;
+      return resultado;
     } catch(e) { console.error('Firebase load error:', e); return null; }
   };
 
   // ── escuta mudanças em tempo real no Firestore ──
+  // Escuta o documento principal; quando ele muda (em qualquer computador),
+  // recarrega tudo (principal + fatias) e entrega o objeto completo.
   window._fbListen = function(callback) {
-    return onSnapshot(doc(firestore, 'esccell', 'db'), (snap) => {
-      if (snap.exists()) callback(snap.data());
+    return onSnapshot(doc(firestore, 'esccell', 'db'), async (snap) => {
+      if (!snap.exists()) return;
+      try {
+        const completo = await window._fbLoad();
+        if (completo) callback(completo);
+      } catch(e) { console.error('Firebase listen error:', e); }
     }, (err) => console.error('Firebase listen error:', err));
   };
 
@@ -1876,14 +1962,15 @@ function saveDB() {
 // Salva imediatamente (sem debounce) — usado após ações críticas como
 // finalizar uma venda, para não depender de um timer que pode ficar
 // bloqueado (ex: por uma janela de impressão aberta).
+// Retorna uma Promise<boolean> — true se realmente salvou na nuvem.
 function saveDBAgora() {
   safeSaveLocalStorage(db);
   clearTimeout(_saveTimer);
-  flushToFirebase();
+  return flushToFirebase();
 }
 
 async function flushToFirebase() {
-  if (!window._fbSave) return;
+  if (!window._fbSave) return false;
   try {
     // Busca o que está na nuvem agora e funde antes de sobrescrever,
     // pra não apagar o que outro computador acabou de salvar.
@@ -1899,18 +1986,19 @@ async function flushToFirebase() {
     // Ignora o próximo snapshot que voltará do próprio save (evita loop)
     window._ignorandoSnapshot = true;
     const payload = JSON.parse(JSON.stringify(db));
-    // Aviso preventivo: o Firestore tem um limite rígido de 1MB por documento.
-    // Isso é diferente do limite do localStorage — se bater nesse teto, o
-    // salvamento na nuvem passa a FALHAR de vez (não dá pra reduzir depois).
-    // Avisa o admin com folga (a partir de 700KB) para arquivar dados antigos a tempo.
+    // Desde que os dados passaram a ser salvos em fatias (chunks) por
+    // documento, o limite de 1MB por documento do Firestore deixou de ser
+    // um risco prático — cada fatia tem no máximo 150 registros. Ainda
+    // assim, avisa o admin se o volume total estiver crescendo muito, como
+    // lembrete de que arquivar de vez em quando ajuda a manter o app ágil.
     try {
-      const tamanhoKB = new Blob([JSON.stringify(payload)]).size / 1024;
-      if (tamanhoKB > 700 && !window._avisouTamanhoNuvem && window.currentUserRole === 'admin') {
+      const totalRegistros = (db.vendas?.length||0) + (db.ordens?.length||0) + (db.movimentacoes?.length||0) + (db.despesas?.length||0) + (db.caixas?.length||0);
+      if (totalRegistros > 8000 && !window._avisouTamanhoNuvem && window.currentUserRole === 'admin') {
         window._avisouTamanhoNuvem = true;
-        toast(`⚠️ Banco na nuvem com ${Math.round(tamanhoKB)}KB (limite é 1024KB) — fale com o suporte pra arquivar dados antigos`, 'error');
+        toast(`ℹ️ O banco já tem ${totalRegistros} registros. Considere arquivar dados antigos em Config para manter o app rápido.`);
       }
     } catch (eSize) {}
-    await window._fbSave(payload);
+    const ok = await window._fbSave(payload);
     setTimeout(() => {
       window._ignorandoSnapshot = false;
       // Se chegou alguma mudança de outro computador enquanto ignorávamos, aplica agora
@@ -1925,7 +2013,8 @@ async function flushToFirebase() {
       // Exclusão já foi aplicada nas duas fusões possíveis deste ciclo de salvamento.
       window._exclusoesPendentes = null;
     }, 3000);
-  } catch(e) { console.error('Firebase flush error:', e); }
+    return ok !== false;
+  } catch(e) { console.error('Firebase flush error:', e); return false; }
 }
 
 // ===== ARQUIVAMENTO DE DADOS ANTIGOS =====
@@ -1979,7 +2068,7 @@ function _baixarArquivo(blob, nomeArquivo) {
   a.remove();
 }
 
-function _executarArquivamento(prep) {
+async function _executarArquivamento(prep) {
   const antesKB = _tamanhoAtualKB();
   const hojeStr = new Date().toISOString().slice(0, 10);
 
@@ -2041,13 +2130,18 @@ function _executarArquivamento(prep) {
     despKeys: new Set(prep.despAntigas.map(_chaveRegistro))
   };
 
-  saveDBAgora();
+  const salvouNaNuvem = await saveDBAgora();
 
-  setTimeout(() => {
-    const depoisKB = _tamanhoAtualKB();
+  const depoisKB = _tamanhoAtualKB();
+  if (salvouNaNuvem) {
     toast(`🗄️ Arquivamento concluído: ${prep.total} registro(s) removidos. ${antesKB}KB → ~${depoisKB}KB`);
-    renderConfigArquivamento();
-  }, 300);
+  } else {
+    // O salvamento na nuvem falhou de verdade — os registros já foram baixados
+    // (JSON/CSV) mas a remoção NÃO foi confirmada no Firebase. Avisa em vez de
+    // fingir sucesso, pra não "voltar" os dados removidos no próximo carregamento.
+    toast(`⚠️ Os arquivos foram baixados, mas houve falha ao confirmar a remoção na nuvem. Tente novamente ou verifique sua conexão.`, 'error');
+  }
+  renderConfigArquivamento();
 }
 
 // Lembrete leve (uma vez por sessão) pro admin não esquecer de arquivar
