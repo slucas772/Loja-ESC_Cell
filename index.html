@@ -1733,6 +1733,30 @@ function _applyDefaults() {
   if (!db.config) db.config = { nome:'ESC CELL', estqMin:3 };
   if (!db.nextMovId) db.nextMovId = 1;
   if (!db.nextDespId) db.nextDespId = 1;
+  _garantirExcluidos();
+}
+
+// ===== EXCLUSÕES PERSISTENTES (tombstones) =====
+// Guarda, DENTRO do próprio banco (db._excluidos), quais registros foram
+// excluídos. Diferente da antiga window._exclusoesPendentes (que só vivia
+// na memória do navegador e sumia ao recarregar ou depois de alguns
+// segundos), isso é salvo na nuvem junto com o resto — então TODO
+// dispositivo, ao fundir seus dados com a nuvem, sabe quais IDs nunca
+// devem "voltar", mesmo que o outro PC ainda tenha uma cópia antiga deles
+// no cache local. Isso resolve registros excluídos (ou duplicatas
+// removidas) reaparecendo depois de sincronizar com outro computador.
+function _garantirExcluidos() {
+  if (!db._excluidos) db._excluidos = {};
+  ['vendas', 'ordens', 'movKeys', 'despKeys'].forEach(k => {
+    if (!Array.isArray(db._excluidos[k])) db._excluidos[k] = [];
+  });
+}
+
+function _registrarExclusaoPersistente(tipo, valores) {
+  _garantirExcluidos();
+  const set = new Set(db._excluidos[tipo]);
+  valores.forEach(v => set.add(v));
+  db._excluidos[tipo] = [...set];
 }
 
 // Campos do db que são listas de registros (cada item tem .id).
@@ -1780,9 +1804,34 @@ function _mergeArraysById(a, b) {
 function _mergeDB(local, remote) {
   if (!remote) return local;
   const merged = { ...remote, ...local };
+
+  // Funde as listas de exclusão (tombstones) de local e remoto ANTES de
+  // fundir os registros — assim uma exclusão feita em QUALQUER dispositivo
+  // vale para todos, mesmo que o outro lado ainda tenha uma cópia antiga.
+  const excLocal = (local && local._excluidos) || {};
+  const excRemoto = (remote && remote._excluidos) || {};
+  const excFundidos = {};
+  ['vendas', 'ordens', 'movKeys', 'despKeys'].forEach(k => {
+    excFundidos[k] = [...new Set([...(excLocal[k] || []), ...(excRemoto[k] || [])])];
+  });
+  merged._excluidos = excFundidos;
+
   _DB_ARRAY_KEYS.forEach(key => {
     if (remote[key] || local[key]) merged[key] = _mergeArraysById(local[key], remote[key]);
   });
+
+  // Reaplica as exclusões por cima da união: um registro apagado em
+  // qualquer dispositivo nunca "volta", mesmo que outro dispositivo ainda
+  // tenha uma cópia antiga dele localmente ou em cache.
+  const idsVendasExcl = new Set(excFundidos.vendas);
+  const idsOrdensExcl = new Set(excFundidos.ordens);
+  const movKeysExcl = new Set(excFundidos.movKeys);
+  const despKeysExcl = new Set(excFundidos.despKeys);
+  if (idsVendasExcl.size) merged.vendas = (merged.vendas || []).filter(v => !idsVendasExcl.has(v.id));
+  if (idsOrdensExcl.size) merged.ordens = (merged.ordens || []).filter(o => !idsOrdensExcl.has(o.id));
+  if (movKeysExcl.size) merged.movimentacoes = (merged.movimentacoes || []).filter(m => !movKeysExcl.has(_chaveRegistro(m)));
+  if (despKeysExcl.size) merged.despesas = (merged.despesas || []).filter(d => !despKeysExcl.has(_chaveRegistro(d)));
+
   _DB_NEXTID_KEYS.forEach(key => {
     merged[key] = Math.max(parseInt(local[key]) || 0, parseInt(remote[key]) || 0);
   });
@@ -2146,6 +2195,10 @@ async function _executarArquivamento(prep, sufixoArquivo) {
     movKeys: new Set(prep.movAntigas.map(_chaveRegistro)),
     despKeys: new Set(prep.despAntigas.map(_chaveRegistro))
   };
+  _registrarExclusaoPersistente('vendas', [...idsVendas]);
+  _registrarExclusaoPersistente('ordens', [...idsOrdens]);
+  _registrarExclusaoPersistente('movKeys', prep.movAntigas.map(_chaveRegistro));
+  _registrarExclusaoPersistente('despKeys', prep.despAntigas.map(_chaveRegistro));
 
   const salvouNaNuvem = await saveDBAgora();
 
@@ -2237,6 +2290,7 @@ async function limparMovimentacoesDuplicadas() {
     ...(window._exclusoesPendentes.movKeys || []),
     ...chavesRemover
   ]);
+  _registrarExclusaoPersistente('movKeys', [...chavesRemover]);
 
   const salvouNaNuvem = await saveDBAgora();
   if (salvouNaNuvem) {
@@ -3074,6 +3128,7 @@ function _registrarExclusaoPendenteVenda(id) {
   // cópia (ainda antiga) que está na nuvem.
   window._exclusoesPendentes = window._exclusoesPendentes || {};
   window._exclusoesPendentes.vendas = new Set([...(window._exclusoesPendentes.vendas || []), id]);
+  _registrarExclusaoPersistente('vendas', [id]);
 }
 
 function excluirVenda(id) {
@@ -3527,6 +3582,7 @@ function _registrarExclusaoPendenteOS(id) {
   // cópia (ainda antiga) que está na nuvem.
   window._exclusoesPendentes = window._exclusoesPendentes || {};
   window._exclusoesPendentes.ordens = new Set([...(window._exclusoesPendentes.ordens || []), id]);
+  _registrarExclusaoPersistente('ordens', [id]);
 }
 
 function excluirOS(id) {
@@ -3752,6 +3808,7 @@ function excluirDespesa(idx) {
       ...(window._exclusoesPendentes.despKeys || []),
       _chaveRegistro(removida)
     ]);
+    _registrarExclusaoPersistente('despKeys', [_chaveRegistro(removida)]);
   }
   saveDBAgora(); renderDespesas(); toast('Despesa removida');
 }
