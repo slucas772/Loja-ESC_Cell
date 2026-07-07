@@ -1204,6 +1204,18 @@ tbody tr:last-child td { border-bottom:none; }
           </div>
         </div>
       </div>
+      <div class="card mb16">
+        <div class="card-header"><span class="card-title">🧹 Limpeza de Duplicatas</span></div>
+        <p class="text-muted" style="font-size:13px;margin-bottom:12px">
+          Versões antigas do sistema tinham um bug que podia duplicar movimentações de estoque
+          ao sincronizar entre computadores. Use o botão abaixo para encontrar registros idênticos
+          (mesmo produto, tipo, quantidade e data/hora exatos) e manter apenas 1 cópia de cada.
+          Um backup dos registros removidos é baixado automaticamente antes da limpeza.
+        </p>
+        <div id="cfg-dup-resultado" style="font-size:13px;color:var(--text2);margin-bottom:12px">Clique em "Verificar" para checar se há duplicatas.</div>
+        <button class="btn btn-ghost btn-sm" onclick="preVisualizarDuplicatas()">🔍 Verificar duplicatas</button>
+        <button class="btn btn-primary btn-sm" onclick="limparMovimentacoesDuplicadas()">🧹 Remover duplicatas encontradas</button>
+      </div>
       <div class="card mb16 admin-only-card">
         <div class="card-header"><span class="card-title">🔑 Senha de Administrador</span></div>
         <p class="text-muted" style="font-size:13px;margin-bottom:12px">
@@ -2149,6 +2161,93 @@ async function _executarArquivamento(prep, sufixoArquivo) {
   renderConfigArquivamento();
 }
 
+// ===== LIMPEZA DE DUPLICATAS =====
+// Bug antigo: em algumas sincronizações, registros sem um "id" confiável
+// eram tratados como sempre novos e regravados junto dos que já existiam,
+// duplicando-os. Isso já foi corrigido na gravação (todo registro novo tem
+// id + _ts), mas duplicatas geradas ANTES da correção continuam na nuvem.
+// Aqui detectamos isso comparando o conteúdo inteiro do registro (exceto
+// id e _ts): duas movimentações com o mesmo produto, tipo, quantidade,
+// observação e data/hora (com milissegundos) são, na prática, o mesmo
+// evento gravado mais de uma vez — coincidência genuína nesse nível de
+// precisão é virtualmente impossível.
+function _assinaturaRegistro(o) {
+  const clone = { ...o };
+  delete clone.id;
+  delete clone._ts;
+  const ordenado = {};
+  Object.keys(clone).sort().forEach(k => ordenado[k] = clone[k]);
+  return JSON.stringify(ordenado);
+}
+
+function detectarDuplicatasMovimentacoes() {
+  const grupos = new Map();
+  (db.movimentacoes || []).forEach(m => {
+    const sig = _assinaturaRegistro(m);
+    if (!grupos.has(sig)) grupos.set(sig, []);
+    grupos.get(sig).push(m);
+  });
+  const duplicatas = [];
+  grupos.forEach(lista => {
+    if (lista.length > 1) {
+      // mantém o registro com o menor id (o "original"); os demais são duplicata
+      lista.sort((a, b) => (a.id || 0) - (b.id || 0));
+      duplicatas.push(...lista.slice(1));
+    }
+  });
+  return duplicatas;
+}
+
+function preVisualizarDuplicatas() {
+  const duplicatas = detectarDuplicatasMovimentacoes();
+  const el = document.getElementById('cfg-dup-resultado');
+  if (!el) return;
+  el.textContent = duplicatas.length
+    ? `⚠️ ${duplicatas.length} movimentação(ões) duplicada(s) encontrada(s). Clique em "Remover duplicatas encontradas" para limpar.`
+    : 'Nenhuma duplicata encontrada 👍';
+}
+
+async function limparMovimentacoesDuplicadas() {
+  const duplicatas = detectarDuplicatasMovimentacoes();
+  const el = document.getElementById('cfg-dup-resultado');
+  if (duplicatas.length === 0) {
+    toast('Nenhuma movimentação duplicada encontrada 👍');
+    if (el) el.textContent = 'Nenhuma duplicata encontrada 👍';
+    return;
+  }
+  const ok = confirm(`Encontradas ${duplicatas.length} movimentações duplicadas (mesmo produto, tipo, quantidade e data/hora exatos).\n\nIsso vai baixar um backup delas e removê-las do sistema (nuvem e local), mantendo 1 cópia de cada. Deseja continuar?`);
+  if (!ok) return;
+
+  // Backup de segurança dos registros removidos antes de apagar de vez
+  _baixarArquivo(
+    new Blob([JSON.stringify({
+      geradoEm: new Date().toISOString(),
+      motivo: 'Limpeza de movimentações duplicadas',
+      movimentacoesRemovidas: duplicatas
+    }, null, 2)], { type: 'application/json' }),
+    `esccell_duplicatas_removidas_${new Date().toISOString().slice(0, 10)}.json`
+  );
+
+  const chavesRemover = new Set(duplicatas.map(_chaveRegistro));
+  db.movimentacoes = (db.movimentacoes || []).filter(m => !chavesRemover.has(_chaveRegistro(m)));
+
+  // Garante que essas duplicatas não "voltem" ao fundir com a cópia da nuvem
+  window._exclusoesPendentes = window._exclusoesPendentes || {};
+  window._exclusoesPendentes.movKeys = new Set([
+    ...(window._exclusoesPendentes.movKeys || []),
+    ...chavesRemover
+  ]);
+
+  const salvouNaNuvem = await saveDBAgora();
+  if (salvouNaNuvem) {
+    toast(`🧹 ${duplicatas.length} movimentação(ões) duplicada(s) removida(s) com sucesso.`);
+    if (el) el.textContent = `Última limpeza: ${duplicatas.length} duplicata(s) removida(s) em ${new Date().toLocaleString('pt-BR')}.`;
+  } else {
+    toast('⚠️ O backup foi baixado, mas houve falha ao confirmar a remoção na nuvem. Tente novamente ou verifique sua conexão.', 'error');
+  }
+  renderConfigArquivamento();
+}
+
 // Lembrete leve (uma vez por sessão) pro admin não esquecer de arquivar
 // todo mês. Só aparece se já faz mais de 30 dias do último arquivamento
 // (ou nunca arquivou) e já existe algo arquivável.
@@ -2970,17 +3069,26 @@ function renderVendas() {
   }).join('');
 }
 
+function _registrarExclusaoPendenteVenda(id) {
+  // Garante que a venda não "volte" quando o salvamento fundir com a
+  // cópia (ainda antiga) que está na nuvem.
+  window._exclusoesPendentes = window._exclusoesPendentes || {};
+  window._exclusoesPendentes.vendas = new Set([...(window._exclusoesPendentes.vendas || []), id]);
+}
+
 function excluirVenda(id) {
   if (!confirm('Excluir esta venda? O estoque NÃO será revertido.')) return;
   if (!isAdmin()) {
     pedirSenhaAdmin('🗑️ Excluir venda requer autorização do administrador.', () => {
       db.vendas = db.vendas.filter(x=>x.id!==id);
-      saveDB(); renderVendas(); renderDashboard(); toast('Venda removida');
+      _registrarExclusaoPendenteVenda(id);
+      saveDBAgora(); renderVendas(); renderDashboard(); toast('Venda removida');
     });
     return;
   }
   db.vendas = db.vendas.filter(x=>x.id!==id);
-  saveDB(); renderVendas(); renderDashboard(); toast('Venda removida');
+  _registrarExclusaoPendenteVenda(id);
+  saveDBAgora(); renderVendas(); renderDashboard(); toast('Venda removida');
 }
 
 function imprimirCupomVenda(id) {
@@ -3414,17 +3522,26 @@ function editarOS(id) {
   openModal('modal-os');
 }
 
+function _registrarExclusaoPendenteOS(id) {
+  // Garante que a O.S. não "volte" quando o salvamento fundir com a
+  // cópia (ainda antiga) que está na nuvem.
+  window._exclusoesPendentes = window._exclusoesPendentes || {};
+  window._exclusoesPendentes.ordens = new Set([...(window._exclusoesPendentes.ordens || []), id]);
+}
+
 function excluirOS(id) {
   if (!confirm('Excluir esta ordem de serviço?')) return;
   if (!isAdmin()) {
     pedirSenhaAdmin('🗑️ Excluir manutenção requer autorização do administrador.', () => {
       db.ordens = db.ordens.filter(x=>x.id!==id);
-      saveDB(); renderOS(); toast('O.S. removida');
+      _registrarExclusaoPendenteOS(id);
+      saveDBAgora(); renderOS(); toast('O.S. removida');
     });
     return;
   }
   db.ordens = db.ordens.filter(x=>x.id!==id);
-  saveDB(); renderOS(); toast('O.S. removida');
+  _registrarExclusaoPendenteOS(id);
+  saveDBAgora(); renderOS(); toast('O.S. removida');
 }
 
 function filterOS(status) { osFilter = status; renderOS(); }
@@ -3625,8 +3742,18 @@ function registrarDespesa() {
 
 function excluirDespesa(idx) {
   if (!confirm('Excluir despesa?')) return;
+  const removida = db.despesas[idx];
   db.despesas.splice(idx,1);
-  saveDB(); renderDespesas(); toast('Despesa removida');
+  // Garante que a despesa não "volte" quando o salvamento fundir com a
+  // cópia (ainda antiga) que está na nuvem.
+  if (removida) {
+    window._exclusoesPendentes = window._exclusoesPendentes || {};
+    window._exclusoesPendentes.despKeys = new Set([
+      ...(window._exclusoesPendentes.despKeys || []),
+      _chaveRegistro(removida)
+    ]);
+  }
+  saveDBAgora(); renderDespesas(); toast('Despesa removida');
 }
 
 function renderDespesas() {
