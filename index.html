@@ -149,7 +149,7 @@
           const completo = await window._fbLoad();
           if (completo) callback(completo);
         } catch(e) { console.error('Firebase listen error:', e); }
-      }, 1200);
+      }, 500);
     };
     const unsubDb = onSnapshot(doc(firestore, 'esccell', 'db'), (snap) => {
       if (snap.exists()) agendarReload();
@@ -2194,6 +2194,36 @@ function _aplicarDadosNuvem(remote, opts) {
   return { antes, depois: _contarRegistrosSync() };
 }
 
+function _maxId(arr) {
+  return (arr || []).reduce((m, x) => Math.max(m, parseInt(x.id) || 0), 0);
+}
+
+// Puxa nuvem sem toast — usado ao focar a aba e no sync periódico.
+async function _pullNuvemSilencioso() {
+  if (!window._fbLoad || !window.currentUserEmail || window._ignorandoSnapshot) return false;
+  try {
+    const remote = await window._fbLoad();
+    if (!remote) return false;
+    const antes = {
+      vendas: (db.vendas || []).length,
+      ordens: (db.ordens || []).length,
+      maxV: _maxId(db.vendas),
+      maxO: _maxId(db.ordens)
+    };
+    _aplicarDadosNuvem(remote);
+    const mudou =
+      (db.vendas || []).length !== antes.vendas ||
+      (db.ordens || []).length !== antes.ordens ||
+      _maxId(db.vendas) !== antes.maxV ||
+      _maxId(db.ordens) !== antes.maxO;
+    if (mudou) _atualizarUIAposSync();
+    return mudou;
+  } catch (e) {
+    console.error('_pullNuvemSilencioso:', e);
+    return false;
+  }
+}
+
 async function forcarSyncNuvem() {
   if (!window._fbLoad) return toast('Firebase não disponível', 'error');
   toast('⏳ Baixando dados completos da nuvem...');
@@ -2257,6 +2287,13 @@ function loadDB() {
         }
       } catch(e) { console.error('Erro ao aplicar dados do Firebase:', e); }
     });
+    // Sync extra ao voltar pra aba (ex: outro PC fez venda enquanto esta aba estava em segundo plano)
+    window.addEventListener('focus', () => { _pullNuvemSilencioso(); });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') _pullNuvemSilencioso();
+    });
+    // Fallback: a cada 45s puxa nuvem caso o listener perca algum evento
+    setInterval(() => { _pullNuvemSilencioso(); }, 45000);
   }, { once: true });
 }
 
@@ -3298,7 +3335,7 @@ function calcTaxaOS(o) {
 function calcTroco() { calcTrocoMix(); }
 
 let _processandoPagamento = false;
-function confirmarPagamento() {
+async function confirmarPagamento() {
   const btnPgto = document.getElementById('btn-confirmar-pgto');
   // Trava contra clique duplo/duplo-toque: sem isso, dois cliques rápidos
   // rodavam esta função duas vezes, duplicando a venda e as movimentações
@@ -3363,17 +3400,19 @@ function confirmarPagamento() {
     troco: troco,
     recebidoDinheiro: temDinheiro ? recebidoDinheiro : 0
   }));
-  // Salva AGORA (sem debounce) — a venda precisa estar gravada antes de
-  // qualquer janela de impressão abrir, pra nunca depender de fechar o cupom.
-  saveDBAgora();
+  // Salva AGORA e espera confirmar na nuvem antes de liberar a tela
   const novaVendaId = db.nextVendaId - 1;
+  const salvou = await saveDBAgora();
   closeModal('modal-pagamento');
   clearCart();
   document.getElementById('discount-val').value = '';
   multipayItems = [];
   filterProducts();
   renderVendas();
+  renderDashboard();
   mostrarConfirmacaoVenda(novaVendaId, total);
+  if (salvou) toast('☁️ Venda salva na nuvem — outros PCs atualizam em instantes', 'success');
+  else toast('⚠️ Venda salva neste PC, mas falhou ao subir na nuvem. Verifique a internet.', 'error');
   } catch (e) {
     console.error('Erro ao confirmar pagamento:', e);
     toast('Erro ao finalizar venda. Tente novamente.', 'error');
@@ -3937,7 +3976,10 @@ function salvarOS() {
     toast('O.S. criada!');
   }
   editingOSId = null;
-  saveDB(); closeModal('modal-os'); renderOS();
+  saveDBAgora().then(ok => {
+    if (!ok) toast('⚠️ O.S. salva aqui, mas não subiu na nuvem. Tente de novo.', 'error');
+  });
+  closeModal('modal-os'); renderOS();
 }
 
 function editarOS(id) {
