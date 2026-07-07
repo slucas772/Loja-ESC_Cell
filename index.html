@@ -2721,6 +2721,7 @@ let multipayItems = []; // [{tipo, valor, parcelas}]
 
 function finalizarVenda() {
   if (!cart.length) return toast('Carrinho vazio','error');
+  _processandoPagamento = false; // libera a trava de duplo-clique para esta nova venda
   const sub = cart.reduce((s,ci)=>s+ci.preco*ci.qty,0);
   const discVal = parseMoney(document.getElementById('discount-val').value);
   const discType = document.getElementById('discount-type').value;
@@ -2930,8 +2931,18 @@ function calcTaxaOS(o) {
 }
 function calcTroco() { calcTrocoMix(); }
 
+let _processandoPagamento = false;
 function confirmarPagamento() {
-  if (document.getElementById('btn-confirmar-pgto').disabled) return;
+  const btnPgto = document.getElementById('btn-confirmar-pgto');
+  // Trava contra clique duplo/duplo-toque: sem isso, dois cliques rápidos
+  // rodavam esta função duas vezes, duplicando a venda e as movimentações
+  // de estoque (baixa de estoque repetida para os mesmos itens).
+  if (btnPgto.disabled || _processandoPagamento) return;
+  _processandoPagamento = true;
+  btnPgto.disabled = true;
+  btnPgto.style.opacity = '.5';
+  btnPgto.style.cursor = 'not-allowed';
+
   const sub = cart.reduce((s,ci)=>s+ci.preco*ci.qty,0);
   const discVal = parseMoney(document.getElementById('discount-val').value);
   const discType = document.getElementById('discount-type').value;
