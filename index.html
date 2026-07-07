@@ -137,16 +137,27 @@
   };
 
   // ── escuta mudanças em tempo real no Firestore ──
-  // Escuta o documento principal; quando ele muda (em qualquer computador),
-  // recarrega tudo (principal + fatias) e entrega o objeto completo.
+  // Escuta o doc principal E a coleção de fatias (esccell_data). Só ouvir
+  // esccell/db não bastava: em alguns PCs a fatia de vendas/O.S. mudava mas
+  // o listener não recarregava, deixando o fechamento desatualizado (ex: 14k vs 16k).
   window._fbListen = function(callback) {
-    return onSnapshot(doc(firestore, 'esccell', 'db'), async (snap) => {
-      if (!snap.exists()) return;
-      try {
-        const completo = await window._fbLoad();
-        if (completo) callback(completo);
-      } catch(e) { console.error('Firebase listen error:', e); }
+    let reloadTimer = null;
+    const agendarReload = () => {
+      clearTimeout(reloadTimer);
+      reloadTimer = setTimeout(async () => {
+        try {
+          const completo = await window._fbLoad();
+          if (completo) callback(completo);
+        } catch(e) { console.error('Firebase listen error:', e); }
+      }, 1200);
+    };
+    const unsubDb = onSnapshot(doc(firestore, 'esccell', 'db'), (snap) => {
+      if (snap.exists()) agendarReload();
     }, (err) => console.error('Firebase listen error:', err));
+    const unsubChunks = onSnapshot(collection(firestore, 'esccell_data'), () => {
+      agendarReload();
+    }, (err) => console.error('Firebase chunks listen error:', err));
+    return () => { unsubDb(); unsubChunks(); clearTimeout(reloadTimer); };
   };
 
   window._fbLogin = async function(email, password) {
@@ -169,39 +180,18 @@
     sessionStorage.setItem('_unloadTime', Date.now().toString());
   });
 
-  // pagehide é disparado tanto no reload quanto no fechar
+  // pagehide dispara no F5 e ao fechar a aba. signOut aqui derrubava a sessão no
+  // reload — só registramos o evento; logout explícito fica no botão "Sair".
   window.addEventListener('pagehide', (e) => {
-    // e.persisted = true significa que a página foi para o bfcache (não fechou)
     if (e.persisted) return;
-
     const user = auth.currentUser;
     if (!user) return;
-
-    // Salva o email para referência
-    sessionStorage.setItem('_userEmail', user.email);
-
-    // Registra o unload com timestamp — a verificação de "foi reload" acontece
-    // no próximo carregamento da página (ver abaixo)
-    try {
-      navigator.sendBeacon && navigator.sendBeacon('', ''); // keep-alive hint
-    } catch(e) {}
-
+    try { navigator.sendBeacon && navigator.sendBeacon('', ''); } catch(e) {}
     registrarLog(user.email, 'logout_fechou_pagina');
-    auth.signOut();
   });
 
-  // Ao carregar a página: se vier de um reload (sessionStorage ainda tem _unloadTime
-  // recente), cancela o logout que possa ter sido disparado
   window.addEventListener('load', () => {
-    const unloadTime = sessionStorage.getItem('_unloadTime');
-    if (unloadTime) {
-      const diff = Date.now() - parseInt(unloadTime);
-      // Se o reload foi em menos de 10 segundos, era um F5 — limpa a flag
-      if (diff < 10000) {
-        sessionStorage.removeItem('_unloadTime');
-        // Não precisa fazer nada — o Firebase Auth persiste a sessão automaticamente
-      }
-    }
+    sessionStorage.removeItem('_unloadTime');
   });
 
   // ── E-mails com permissão de ADMIN (acesso total) ──
@@ -234,18 +224,18 @@
 </script>
 <style>
 :root {
-  --bg: #0f0f13;
-  --bg2: #16161d;
-  --bg3: #1e1e28;
-  --bg4: #26263a;
-  --border: rgba(255,255,255,0.08);
-  --border2: rgba(255,255,255,0.14);
-  --text: #f0f0f5;
-  --text2: #9898b0;
-  --text3: #606078;
-  --accent: #6c63ff;
-  --accent2: #8b84ff;
-  --accent-bg: rgba(108,99,255,0.12);
+  --bg: #0c0c10;
+  --bg2: #13131a;
+  --bg3: #1a1a24;
+  --bg4: #242433;
+  --border: rgba(255,255,255,0.07);
+  --border2: rgba(255,255,255,0.12);
+  --text: #f4f4f8;
+  --text2: #a1a1b5;
+  --text3: #6b6b80;
+  --accent: #6366f1;
+  --accent2: #818cf8;
+  --accent-bg: rgba(99,102,241,0.14);
   --green: #22c55e;
   --green-bg: rgba(34,197,94,0.12);
   --red: #ef4444;
@@ -260,84 +250,184 @@
   --teal-bg: rgba(20,184,166,0.1);
   --radius: 10px;
   --radius-lg: 14px;
-  --shadow: 0 4px 24px rgba(0,0,0,0.4);
+  --radius-xl: 18px;
+  --shadow: 0 8px 32px rgba(0,0,0,0.45);
+  --shadow-sm: 0 2px 8px rgba(0,0,0,0.25);
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* ── TEMA CLARO ── */
 body.light {
-  --bg: #f0f2f5;
+  --bg: #eef0f4;
   --bg2: #ffffff;
-  --bg3: #e8eaed;
-  --bg4: #d8dce3;
-  --border: rgba(0,0,0,0.08);
-  --border2: rgba(0,0,0,0.14);
-  --text: #111827;
-  --text2: #4b5563;
-  --text3: #9ca3af;
-  --accent: #6c63ff;
-  --accent2: #5b52e0;
-  --accent-bg: rgba(108,99,255,0.10);
+  --bg3: #f3f4f6;
+  --bg4: #e5e7eb;
+  --border: rgba(0,0,0,0.07);
+  --border2: rgba(0,0,0,0.12);
+  --text: #0f172a;
+  --text2: #475569;
+  --text3: #94a3b8;
+  --accent: #6366f1;
+  --accent2: #4f46e5;
+  --accent-bg: rgba(99,102,241,0.10);
   --green-bg: rgba(34,197,94,0.10);
   --red-bg: rgba(239,68,68,0.08);
   --amber-bg: rgba(245,158,11,0.10);
   --blue-bg: rgba(59,130,246,0.10);
   --pink-bg: rgba(236,72,153,0.08);
   --teal-bg: rgba(20,184,166,0.08);
-  --shadow: 0 4px 24px rgba(0,0,0,0.10);
+  --shadow: 0 8px 32px rgba(15,23,42,0.08);
+  --shadow-sm: 0 2px 8px rgba(15,23,42,0.06);
 }
-* { margin:0; padding:0; box-sizing:border-box; }
-body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; font-size:14px; }
+
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+html { -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; }
+body {
+  font-family:'DM Sans',system-ui,sans-serif;
+  background:var(--bg);
+  background-image:
+    radial-gradient(ellipse 80% 60% at 0% 0%, rgba(99,102,241,0.08) 0%, transparent 55%),
+    radial-gradient(ellipse 60% 50% at 100% 100%, rgba(20,184,166,0.05) 0%, transparent 50%);
+  color:var(--text);
+  min-height:100vh;
+  font-size:14px;
+  line-height:1.5;
+}
+body.light {
+  background-image:
+    radial-gradient(ellipse 80% 60% at 0% 0%, rgba(99,102,241,0.06) 0%, transparent 55%),
+    radial-gradient(ellipse 60% 50% at 100% 100%, rgba(20,184,166,0.04) 0%, transparent 50%);
+}
 
 /* LAYOUT */
 .app { display:flex; height:100vh; overflow:hidden; }
-.sidebar { width:220px; background:var(--bg2); border-right:1px solid var(--border); display:flex; flex-direction:column; flex-shrink:0; }
+.sidebar {
+  width:232px;
+  background:var(--bg2);
+  border-right:1px solid var(--border);
+  display:flex; flex-direction:column; flex-shrink:0;
+  box-shadow:4px 0 24px rgba(0,0,0,0.15);
+}
+body.light .sidebar { box-shadow:4px 0 24px rgba(15,23,42,0.04); }
 .main { flex:1; overflow:hidden; display:flex; flex-direction:column; min-height:0; }
 
 /* SIDEBAR */
-.logo { padding:20px 18px 16px; border-bottom:1px solid var(--border); }
-.logo h1 { font-size:16px; font-weight:700; color:var(--text); }
-.logo span { font-size:11px; color:var(--text3); letter-spacing:.5px; }
-.logo .dot { display:inline-block; width:8px; height:8px; background:var(--accent); border-radius:50%; margin-right:6px; }
-nav { flex:1; padding:10px 10px; overflow-y:auto; }
-nav a { display:flex; align-items:center; gap:10px; padding:9px 10px; border-radius:var(--radius); color:var(--text2); cursor:pointer; font-size:13px; font-weight:500; transition:.15s; text-decoration:none; margin-bottom:2px; }
+.logo { padding:22px 18px 18px; border-bottom:1px solid var(--border); }
+.logo h1 { font-size:17px; font-weight:700; color:var(--text); letter-spacing:-0.02em; }
+.logo span { font-size:11px; color:var(--text3); letter-spacing:.04em; font-weight:500; }
+.logo .dot {
+  display:inline-block; width:8px; height:8px;
+  background:linear-gradient(135deg, var(--accent), var(--accent2));
+  border-radius:50%; margin-right:7px;
+  box-shadow:0 0 8px rgba(99,102,241,0.5);
+}
+nav { flex:1; padding:12px 10px; overflow-y:auto; }
+nav a {
+  display:flex; align-items:center; gap:10px;
+  padding:10px 12px; border-radius:var(--radius);
+  color:var(--text2); cursor:pointer; font-size:13px; font-weight:500;
+  transition:background .18s var(--ease), color .18s var(--ease), transform .12s var(--ease);
+  text-decoration:none; margin-bottom:3px;
+}
 nav a:hover { background:var(--bg3); color:var(--text); }
-nav a.active { background:var(--accent-bg); color:var(--accent2); }
+nav a.active {
+  background:var(--accent-bg); color:var(--accent2);
+  font-weight:600;
+  box-shadow:inset 3px 0 0 var(--accent);
+}
 nav a .ic { width:18px; height:18px; display:flex; align-items:center; justify-content:center; font-size:15px; flex-shrink:0; }
-.nav-section { font-size:10px; color:var(--text3); letter-spacing:1px; font-weight:600; padding:12px 10px 4px; text-transform:uppercase; }
-.sidebar-footer { padding:12px; border-top:1px solid var(--border); font-size:11px; color:var(--text3); }
+.nav-section { font-size:10px; color:var(--text3); letter-spacing:.08em; font-weight:700; padding:14px 12px 6px; text-transform:uppercase; }
+.sidebar-footer { padding:14px 12px; border-top:1px solid var(--border); font-size:11px; color:var(--text3); }
+.sidebar-footer button {
+  background:var(--bg3); border:1px solid var(--border2); border-radius:var(--radius);
+  padding:8px 12px; color:var(--text2); font-size:11px; cursor:pointer;
+  font-family:inherit; font-weight:600; text-align:left; width:100%;
+  transition:background .18s var(--ease), border-color .18s var(--ease);
+}
+.sidebar-footer button:hover { background:var(--bg4); border-color:var(--border2); }
+.sidebar-footer button.btn-logout {
+  background:var(--red-bg); border-color:rgba(239,68,68,0.25); color:var(--red);
+}
+.sidebar-footer button.btn-logout:hover { background:rgba(239,68,68,0.18); }
 
 /* TOPBAR */
-.topbar { padding:14px 24px; background:var(--bg2); border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; flex-shrink:0; }
-.topbar h2 { font-size:17px; font-weight:600; }
-.topbar-actions { display:flex; gap:8px; align-items:center; }
-.badge-time { font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--text3); background:var(--bg3); padding:4px 10px; border-radius:6px; border:1px solid var(--border); }
+.topbar {
+  padding:16px 28px;
+  background:rgba(19,19,26,0.85);
+  backdrop-filter:blur(12px);
+  border-bottom:1px solid var(--border);
+  display:flex; align-items:center; justify-content:space-between; flex-shrink:0;
+}
+body.light .topbar { background:rgba(255,255,255,0.9); }
+.topbar h2 { font-size:18px; font-weight:700; letter-spacing:-0.02em; color:var(--text); }
+.topbar-actions { display:flex; gap:10px; align-items:center; }
+.badge-time {
+  font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--text2);
+  background:var(--bg3); padding:6px 12px; border-radius:8px;
+  border:1px solid var(--border); letter-spacing:.02em;
+}
 
 /* BUTTONS */
-.btn { display:inline-flex; align-items:center; gap:6px; padding:8px 16px; border-radius:var(--radius); border:none; cursor:pointer; font-size:13px; font-weight:500; font-family:inherit; transition:.15s; }
-.btn-primary { background:var(--accent); color:#fff; }
-.btn-primary:hover { background:var(--accent2); }
-.btn-ghost { background:transparent; color:var(--text2); border:1px solid var(--border2); }
-.btn-ghost:hover { background:var(--bg3); color:var(--text); }
-.btn-success { background:var(--green); color:#fff; }
-.btn-danger { background:var(--red); color:#fff; }
-.btn-sm { padding:5px 10px; font-size:12px; }
-.btn-icon { padding:7px; border-radius:8px; }
+.btn {
+  display:inline-flex; align-items:center; justify-content:center; gap:6px;
+  padding:9px 18px; border-radius:var(--radius); border:none; cursor:pointer;
+  font-size:13px; font-weight:600; font-family:inherit;
+  transition:transform .12s var(--ease), box-shadow .18s var(--ease), background .18s var(--ease), opacity .18s;
+}
+.btn:active:not(:disabled) { transform:scale(0.98); }
+.btn-primary {
+  background:linear-gradient(135deg, var(--accent) 0%, #7c3aed 100%);
+  color:#fff; box-shadow:0 2px 12px rgba(99,102,241,0.35);
+}
+.btn-primary:hover:not(:disabled) { box-shadow:0 4px 20px rgba(99,102,241,0.45); filter:brightness(1.05); }
+.btn-ghost { background:var(--bg3); color:var(--text2); border:1px solid var(--border2); }
+.btn-ghost:hover:not(:disabled) { background:var(--bg4); color:var(--text); border-color:var(--border2); }
+.btn-success { background:linear-gradient(135deg, #16a34a, var(--green)); color:#fff; box-shadow:0 2px 10px rgba(34,197,94,0.3); }
+.btn-success:hover:not(:disabled) { filter:brightness(1.05); }
+.btn-danger { background:linear-gradient(135deg, #dc2626, var(--red)); color:#fff; box-shadow:0 2px 10px rgba(239,68,68,0.3); }
+.btn-danger:hover:not(:disabled) { filter:brightness(1.05); }
+.btn-sm { padding:6px 12px; font-size:12px; border-radius:8px; }
+.btn-icon { padding:7px; border-radius:8px; min-width:32px; min-height:32px; }
 
 /* TABS (pages) */
-.page { display:none; padding:24px; flex:1; min-height:0; }
+.page { display:none; padding:28px; flex:1; min-height:0; }
 .page.active { display:block; overflow-y:auto; }
 
 /* CARDS */
-.card { background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius-lg); padding:20px; overflow:hidden; }
-.card-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
-.card-title { font-size:14px; font-weight:600; color:var(--text); }
+.card {
+  background:var(--bg2); border:1px solid var(--border);
+  border-radius:var(--radius-lg); padding:22px; overflow:hidden;
+  box-shadow:var(--shadow-sm);
+  transition:box-shadow .2s var(--ease);
+}
+.card:hover { box-shadow:0 4px 20px rgba(0,0,0,0.12); }
+body.light .card:hover { box-shadow:0 4px 20px rgba(15,23,42,0.06); }
+.card-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:18px; gap:12px; flex-wrap:wrap; }
+.card-title { font-size:15px; font-weight:700; color:var(--text); letter-spacing:-0.01em; }
 
 /* STATS GRID */
-.stats-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin-bottom:20px; }
-.stat-card { background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius-lg); padding:16px; }
-.stat-label { font-size:11px; color:var(--text3); font-weight:500; letter-spacing:.4px; text-transform:uppercase; margin-bottom:6px; }
-.stat-value { font-size:24px; font-weight:700; font-family:'JetBrains Mono',monospace; }
-.stat-sub { font-size:11px; color:var(--text3); margin-top:4px; }
+.stats-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(168px,1fr)); gap:14px; margin-bottom:22px; }
+.stat-card {
+  background:var(--bg2); border:1px solid var(--border);
+  border-radius:var(--radius-lg); padding:18px 18px 16px;
+  box-shadow:var(--shadow-sm);
+  position:relative; overflow:hidden;
+  transition:transform .2s var(--ease), box-shadow .2s var(--ease);
+}
+.stat-card::before {
+  content:''; position:absolute; top:0; left:0; right:0; height:3px;
+  background:var(--border); border-radius:var(--radius-lg) var(--radius-lg) 0 0;
+}
+.stat-card:hover { transform:translateY(-2px); box-shadow:0 8px 24px rgba(0,0,0,0.15); }
+body.light .stat-card:hover { box-shadow:0 8px 24px rgba(15,23,42,0.08); }
+.stat-green::before { background:linear-gradient(90deg, var(--green), #4ade80); }
+.stat-amber::before { background:linear-gradient(90deg, var(--amber), #fbbf24); }
+.stat-blue::before { background:linear-gradient(90deg, var(--blue), #60a5fa); }
+.stat-pink::before { background:linear-gradient(90deg, var(--pink), #f472b6); }
+.stat-teal::before { background:linear-gradient(90deg, var(--teal), #2dd4bf); }
+.stat-label { font-size:10px; color:var(--text3); font-weight:700; letter-spacing:.06em; text-transform:uppercase; margin-bottom:8px; }
+.stat-value { font-size:26px; font-weight:700; font-family:'JetBrains Mono',monospace; letter-spacing:-0.02em; line-height:1.2; }
+.stat-sub { font-size:11px; color:var(--text3); margin-top:6px; font-weight:500; }
 .stat-green .stat-value { color:var(--green); }
 .stat-amber .stat-value { color:var(--amber); }
 .stat-blue .stat-value { color:var(--blue); }
@@ -345,23 +435,35 @@ nav a .ic { width:18px; height:18px; display:flex; align-items:center; justify-c
 .stat-teal .stat-value { color:var(--teal); }
 
 /* TABLE */
-.table-wrap { overflow-x:auto; }
+.table-wrap { overflow-x:auto; border-radius:var(--radius); border:1px solid var(--border); }
 table { width:100%; border-collapse:collapse; font-size:13px; }
-thead th { text-align:left; padding:8px 12px; font-size:11px; color:var(--text3); font-weight:600; letter-spacing:.5px; text-transform:uppercase; border-bottom:1px solid var(--border); }
-tbody td { padding:10px 12px; border-bottom:1px solid var(--border); color:var(--text2); vertical-align:middle; }
-tbody tr:hover td { background:var(--bg3); }
+thead th {
+  text-align:left; padding:11px 14px; font-size:10px; color:var(--text3);
+  font-weight:700; letter-spacing:.06em; text-transform:uppercase;
+  border-bottom:1px solid var(--border); background:var(--bg3);
+  white-space:nowrap;
+}
+tbody td { padding:11px 14px; border-bottom:1px solid var(--border); color:var(--text2); vertical-align:middle; }
+tbody tr { transition:background .12s var(--ease); }
+tbody tr:hover td { background:rgba(99,102,241,0.04); }
+body.light tbody tr:hover td { background:rgba(99,102,241,0.06); }
 tbody tr:last-child td { border-bottom:none; }
 
 /* FORMS */
-.form-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:14px; }
-.form-group { display:flex; flex-direction:column; gap:5px; }
-.form-group label { font-size:12px; color:var(--text3); font-weight:500; }
+.form-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:16px; }
+.form-group { display:flex; flex-direction:column; gap:6px; }
+.form-group label { font-size:12px; color:var(--text2); font-weight:600; }
 .form-group input, .form-group select, .form-group textarea {
-  background:var(--bg3); border:1px solid var(--border2); border-radius:var(--radius); padding:9px 12px;
-  color:var(--text); font-size:13px; font-family:inherit; outline:none; transition:.15s;
+  background:var(--bg3); border:1px solid var(--border2); border-radius:var(--radius);
+  padding:10px 13px; color:var(--text); font-size:13px; font-family:inherit;
+  outline:none; transition:border-color .18s var(--ease), box-shadow .18s var(--ease);
 }
-.form-group input:focus, .form-group select:focus, .form-group textarea:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(108,99,255,0.15); }
-.form-group textarea { resize:vertical; min-height:80px; }
+.form-group input:focus, .form-group select:focus, .form-group textarea:focus {
+  border-color:var(--accent);
+  box-shadow:0 0 0 3px rgba(99,102,241,0.18);
+}
+.form-group input::placeholder, .form-group textarea::placeholder { color:var(--text3); opacity:.8; }
+.form-group textarea { resize:vertical; min-height:88px; }
 .form-group select option { background:var(--bg3); }
 
 /* PDV LAYOUT */
@@ -374,8 +476,16 @@ tbody tr:last-child td { border-bottom:none; }
 .pdv-search { position:relative; }
 .search-icon { position:absolute; left:22px; top:50%; transform:translateY(-50%); color:var(--text3); font-size:14px; pointer-events:none; }
 .prod-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); gap:8px; padding:12px; overflow-y:auto; flex:1; }
-.prod-item { background:var(--bg3); border:1px solid var(--border); border-radius:var(--radius); padding:12px; cursor:pointer; transition:.15s; }
-.prod-item:hover { border-color:var(--accent); background:var(--accent-bg); }
+.prod-item {
+  background:var(--bg3); border:1px solid var(--border); border-radius:var(--radius);
+  padding:13px; cursor:pointer;
+  transition:border-color .18s var(--ease), background .18s var(--ease), transform .12s var(--ease), box-shadow .18s;
+}
+.prod-item:hover {
+  border-color:rgba(99,102,241,0.5); background:var(--accent-bg);
+  transform:translateY(-1px); box-shadow:0 4px 12px rgba(99,102,241,0.15);
+}
+.prod-item:active { transform:translateY(0); }
 .prod-item .name { font-size:12px; font-weight:600; color:var(--text); margin-bottom:4px; line-height:1.3; }
 .prod-item .cat { font-size:10px; color:var(--text3); margin-bottom:6px; }
 .prod-item .price { font-size:14px; font-weight:700; color:var(--green); font-family:'JetBrains Mono',monospace; }
@@ -407,7 +517,10 @@ tbody tr:last-child td { border-bottom:none; }
 .discount-row select { background:var(--bg3); border:1px solid var(--border2); border-radius:8px; padding:7px; color:var(--text); font-size:13px; outline:none; font-family:inherit; }
 
 /* TAGS / BADGES */
-.badge { display:inline-flex; align-items:center; padding:2px 8px; border-radius:20px; font-size:11px; font-weight:600; }
+.badge {
+  display:inline-flex; align-items:center; padding:3px 9px;
+  border-radius:6px; font-size:11px; font-weight:600; letter-spacing:.01em;
+}
 .badge-green { background:var(--green-bg); color:var(--green); }
 .badge-amber { background:var(--amber-bg); color:var(--amber); }
 .badge-red { background:var(--red-bg); color:var(--red); }
@@ -418,15 +531,40 @@ tbody tr:last-child td { border-bottom:none; }
 .badge-pink { background:var(--pink-bg); color:var(--pink); }
 
 /* MODAL */
-.modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.7); backdrop-filter:blur(4px); z-index:100; display:none; align-items:center; justify-content:center; padding:20px; }
+.modal-overlay {
+  position:fixed; inset:0; background:rgba(0,0,0,.65);
+  backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
+  z-index:100; display:none; align-items:center; justify-content:center; padding:20px;
+}
 .modal-overlay.open { display:flex; }
-.modal { background:var(--bg2); border:1px solid var(--border2); border-radius:var(--radius-lg); width:100%; max-width:600px; max-height:90vh; overflow-y:auto; box-shadow:var(--shadow); }
-.modal-header { padding:18px 20px 14px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; }
-.modal-header h3 { font-size:15px; font-weight:600; }
-.modal-body { padding:20px; }
-.modal-footer { padding:14px 20px; border-top:1px solid var(--border); display:flex; justify-content:flex-end; gap:8px; }
-.close-btn { background:none; border:none; color:var(--text3); cursor:pointer; font-size:20px; line-height:1; }
-.close-btn:hover { color:var(--text); }
+.modal {
+  background:var(--bg2); border:1px solid var(--border2);
+  border-radius:var(--radius-xl); width:100%; max-width:600px; max-height:90vh;
+  overflow-y:auto; box-shadow:var(--shadow), 0 0 0 1px rgba(255,255,255,0.05);
+  animation:modalIn .22s var(--ease);
+}
+@keyframes modalIn {
+  from { opacity:0; transform:scale(0.96) translateY(8px); }
+  to { opacity:1; transform:scale(1) translateY(0); }
+}
+.modal-header {
+  padding:20px 22px 16px; border-bottom:1px solid var(--border);
+  display:flex; align-items:center; justify-content:space-between;
+}
+.modal-header h3 { font-size:16px; font-weight:700; letter-spacing:-0.01em; }
+.modal-body { padding:22px; }
+.modal-footer {
+  padding:16px 22px; border-top:1px solid var(--border);
+  display:flex; justify-content:flex-end; gap:10px; background:var(--bg3);
+  border-radius:0 0 var(--radius-xl) var(--radius-xl);
+}
+.close-btn {
+  background:var(--bg3); border:1px solid var(--border); border-radius:8px;
+  color:var(--text3); cursor:pointer; font-size:18px; line-height:1;
+  width:32px; height:32px; display:flex; align-items:center; justify-content:center;
+  transition:background .15s, color .15s;
+}
+.close-btn:hover { background:var(--bg4); color:var(--text); }
 
 /* CHARTS */
 .chart-bar { height:8px; background:var(--bg4); border-radius:4px; overflow:hidden; margin-top:4px; }
@@ -441,6 +579,7 @@ tbody tr:last-child td { border-bottom:none; }
 /* GRID UTILS */
 .grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
 .grid-3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px; }
+.mb4 { margin-bottom:4px; }
 .mb8 { margin-bottom:8px; }
 .mb12 { margin-bottom:12px; }
 .mb16 { margin-bottom:16px; }
@@ -467,10 +606,18 @@ tbody tr:last-child td { border-bottom:none; }
 }
 
 /* TOAST */
-.toast { position:fixed; bottom:24px; right:24px; background:var(--bg2); border:1px solid var(--border2); border-radius:var(--radius); padding:12px 16px; font-size:13px; box-shadow:var(--shadow); z-index:200; transform:translateY(100px); opacity:0; transition:.3s; display:flex; align-items:center; gap:8px; max-width:320px; }
+.toast {
+  position:fixed; bottom:28px; right:28px; background:var(--bg2);
+  border:1px solid var(--border2); border-radius:var(--radius-lg);
+  padding:14px 18px; font-size:13px; font-weight:500;
+  box-shadow:var(--shadow); z-index:200;
+  transform:translateY(80px); opacity:0;
+  transition:transform .35s var(--ease), opacity .35s var(--ease);
+  display:flex; align-items:center; gap:10px; max-width:360px;
+}
 .toast.show { transform:translateY(0); opacity:1; }
-.toast.success { border-color:var(--green); }
-.toast.error { border-color:var(--red); }
+.toast.success { border-left:3px solid var(--green); }
+.toast.error { border-left:3px solid var(--red); }
 
 /* STATUS DOT */
 .status-dot { width:8px; height:8px; border-radius:50%; display:inline-block; margin-right:5px; flex-shrink:0; }
@@ -489,9 +636,15 @@ tbody tr:last-child td { border-bottom:none; }
 .section-title { font-size:13px; font-weight:600; color:var(--text3); letter-spacing:.5px; text-transform:uppercase; margin-bottom:12px; }
 
 /* TABS WITHIN PAGE */
-.inner-tabs { display:flex; gap:2px; border-bottom:1px solid var(--border); margin-bottom:20px; }
-.inner-tab { padding:8px 16px; font-size:13px; font-weight:500; color:var(--text3); cursor:pointer; border-bottom:2px solid transparent; transition:.15s; }
-.inner-tab.active { color:var(--accent2); border-bottom-color:var(--accent); }
+.inner-tabs { display:flex; gap:4px; border-bottom:1px solid var(--border); margin-bottom:22px; padding-bottom:0; }
+.inner-tab {
+  padding:10px 18px; font-size:13px; font-weight:600; color:var(--text3);
+  cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px;
+  transition:color .18s var(--ease), border-color .18s var(--ease);
+  border-radius:var(--radius) var(--radius) 0 0;
+}
+.inner-tab:hover { color:var(--text2); background:var(--bg3); }
+.inner-tab.active { color:var(--accent2); border-bottom-color:var(--accent); background:var(--accent-bg); }
 .inner-tab-content { display:none; }
 .inner-tab-content.active { display:block; }
 
@@ -507,51 +660,105 @@ tbody tr:last-child td { border-bottom:none; }
 .pay-detail-row:last-child { margin-bottom:0; font-weight:600; color:var(--text); border-top:1px solid var(--border); padding-top:6px; }
 
 /* SCROLL */
-::-webkit-scrollbar { width:6px; height:6px; }
+::-webkit-scrollbar { width:7px; height:7px; }
 ::-webkit-scrollbar-track { background:transparent; }
-::-webkit-scrollbar-thumb { background:var(--bg4); border-radius:3px; }
-::-webkit-scrollbar-thumb:hover { background:var(--text3); }
+::-webkit-scrollbar-thumb { background:var(--bg4); border-radius:99px; border:2px solid transparent; background-clip:padding-box; }
+::-webkit-scrollbar-thumb:hover { background:var(--text3); border:2px solid transparent; background-clip:padding-box; }
+
+/* ── LOGIN ── */
+@keyframes spin { to { transform: rotate(360deg); } }
+#login-screen {
+  display:flex; align-items:center; justify-content:center;
+  min-height:100vh; padding:24px;
+  background:#0c0c10;
+  background-image:
+    radial-gradient(ellipse 70% 50% at 50% -10%, rgba(99,102,241,0.22) 0%, transparent 55%),
+    radial-gradient(ellipse 50% 40% at 100% 80%, rgba(20,184,166,0.1) 0%, transparent 50%);
+}
+.login-card {
+  background:rgba(19,19,26,0.92); border:1px solid rgba(255,255,255,0.1);
+  border-radius:var(--radius-xl); padding:40px 36px; width:100%; max-width:380px;
+  display:flex; flex-direction:column; gap:20px;
+  box-shadow:0 24px 64px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04);
+  backdrop-filter:blur(16px);
+}
+.login-brand { text-align:center; margin-bottom:4px; }
+.login-brand-icon {
+  display:inline-flex; align-items:center; justify-content:center;
+  width:52px; height:52px;
+  background:linear-gradient(135deg, rgba(99,102,241,0.25), rgba(124,58,237,0.15));
+  border:1px solid rgba(99,102,241,0.3); border-radius:14px;
+  font-size:24px; margin-bottom:14px;
+}
+.login-brand h1 { font-size:22px; font-weight:800; color:#f4f4f8; letter-spacing:-0.03em; }
+.login-brand p { font-size:13px; color:#6b6b80; margin-top:6px; font-weight:500; }
+.login-field { display:flex; flex-direction:column; gap:6px; }
+.login-field label { font-size:12px; color:#a1a1b5; font-weight:600; }
+.login-field input {
+  background:#1a1a24; border:1px solid rgba(255,255,255,0.12);
+  border-radius:var(--radius); padding:11px 14px; color:#f4f4f8;
+  font-size:14px; outline:none; font-family:inherit; width:100%;
+  transition:border-color .18s, box-shadow .18s;
+}
+.login-field input:focus {
+  border-color:#6366f1;
+  box-shadow:0 0 0 3px rgba(99,102,241,0.2);
+}
+.login-field input::placeholder { color:#6b6b80; }
+#login-erro {
+  background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.28);
+  border-radius:var(--radius); padding:11px 14px; font-size:12px;
+  color:#f87171; text-align:center; font-weight:500;
+}
+#login-loading { display:none; flex-direction:column; align-items:center; gap:10px; }
+.login-progress-track {
+  width:100%; height:4px; background:rgba(255,255,255,0.08);
+  border-radius:99px; overflow:hidden;
+}
+#login-progress-bar {
+  height:100%; width:0%; background:linear-gradient(90deg, #6366f1, #a78bfa);
+  border-radius:99px; transition:width .4s ease;
+}
+#login-loading-text { font-size:12px; color:#9898b0; letter-spacing:.02em; }
+#login-btn {
+  background:linear-gradient(135deg, #6366f1, #7c3aed);
+  color:#fff; border:none; border-radius:var(--radius);
+  padding:13px; font-size:14px; font-weight:700; cursor:pointer;
+  font-family:inherit; width:100%;
+  box-shadow:0 4px 20px rgba(99,102,241,0.4);
+  transition:transform .12s, box-shadow .18s, filter .18s;
+}
+#login-btn:hover:not(:disabled) { filter:brightness(1.06); box-shadow:0 6px 28px rgba(99,102,241,0.5); }
+#login-btn:active:not(:disabled) { transform:scale(0.98); }
 </style>
 </head>
 <body>
 <!-- TELA DE LOGIN -->
-<style>
-@keyframes spin { to { transform: rotate(360deg); } }
-@keyframes progressPulse { 0%,100%{opacity:1} 50%{opacity:.6} }
-.login-spinner { display:inline-block; width:18px; height:18px; border:2px solid rgba(255,255,255,0.3); border-top-color:#fff; border-radius:50%; animation:spin .7s linear infinite; vertical-align:middle; margin-right:6px; }
-</style>
-<div id="login-screen" style="display:flex;align-items:center;justify-content:center;height:100vh;background:#0f0f13;flex-direction:column;gap:0">
-  <div style="background:#16161d;border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:40px 36px;width:340px;display:flex;flex-direction:column;gap:20px">
-    <div style="text-align:center;margin-bottom:4px">
-      <div style="display:inline-block;width:48px;height:48px;background:rgba(108,99,255,0.2);border-radius:12px;line-height:48px;font-size:22px;margin-bottom:12px">🔒</div>
-      <div style="font-size:20px;font-weight:700;color:#f0f0f5">ESC CELL</div>
-      <div style="font-size:12px;color:#606078;margin-top:4px">Acesso restrito</div>
+<div id="login-screen">
+  <div class="login-card">
+    <div class="login-brand">
+      <div class="login-brand-icon">🔒</div>
+      <h1>ESC CELL</h1>
+      <p>Acesso restrito ao sistema</p>
     </div>
-    <div style="display:flex;flex-direction:column;gap:5px">
-      <label style="font-size:12px;color:#9898b0;font-weight:500">E-mail</label>
+    <div class="login-field">
+      <label for="login-email">E-mail</label>
       <input id="login-email" type="email" placeholder="seu@email.com"
-        style="background:#1e1e28;border:1px solid rgba(255,255,255,0.14);border-radius:10px;padding:10px 14px;color:#f0f0f5;font-size:13px;outline:none;font-family:inherit"
         onkeydown="if(event.key==='Enter')doLogin()">
     </div>
-    <div style="display:flex;flex-direction:column;gap:5px">
-      <label style="font-size:12px;color:#9898b0;font-weight:500">Senha</label>
+    <div class="login-field">
+      <label for="login-senha">Senha</label>
       <input id="login-senha" type="password" placeholder="••••••••"
-        style="background:#1e1e28;border:1px solid rgba(255,255,255,0.14);border-radius:10px;padding:10px 14px;color:#f0f0f5;font-size:13px;outline:none;font-family:inherit"
         onkeydown="if(event.key==='Enter')doLogin()">
     </div>
-    <div id="login-erro" style="display:none;background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.3);border-radius:8px;padding:10px 14px;font-size:12px;color:#ef4444;text-align:center"></div>
-    <!-- Barra de carregamento -->
-    <div id="login-loading" style="display:none;flex-direction:column;align-items:center;gap:8px">
-      <div style="width:100%;height:4px;background:rgba(255,255,255,0.08);border-radius:99px;overflow:hidden">
-        <div id="login-progress-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#6c63ff,#a78bfa);border-radius:99px;transition:width .4s ease"></div>
+    <div id="login-erro" style="display:none"></div>
+    <div id="login-loading">
+      <div class="login-progress-track">
+        <div id="login-progress-bar"></div>
       </div>
-      <div id="login-loading-text" style="font-size:12px;color:#9898b0;letter-spacing:.3px">Autenticando...</div>
+      <div id="login-loading-text">Autenticando...</div>
     </div>
-    <button id="login-btn" onclick="doLogin()"
-      style="background:#6c63ff;color:#fff;border:none;border-radius:10px;padding:12px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;transition:.15s"
-      onmouseover="if(!this.disabled)this.style.background='#8b84ff'" onmouseout="if(!this.disabled)this.style.background='#6c63ff'">
-      Entrar
-    </button>
+    <button id="login-btn" onclick="doLogin()">Entrar</button>
   </div>
 </div>
 
@@ -594,8 +801,8 @@ tbody tr:last-child td { border-bottom:none; }
     </nav>
     <div class="sidebar-footer" style="display:flex;flex-direction:column;gap:8px">
       <div>CellManager Pro 2025</div>
-      <button id="btn-tema" onclick="toggleTema()" style="background:var(--bg3);border:1px solid var(--border2);border-radius:8px;padding:6px 10px;color:var(--text2);font-size:11px;cursor:pointer;font-family:inherit;font-weight:600;text-align:left;transition:.15s">🌙 Modo Noturno</button>
-      <button onclick="doLogout()" style="background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.2);border-radius:8px;padding:6px 10px;color:#ef4444;font-size:11px;cursor:pointer;font-family:inherit;font-weight:600;text-align:left">🚪 Sair</button>
+      <button id="btn-tema" onclick="toggleTema()">🌙 Modo Noturno</button>
+      <button class="btn-logout" onclick="doLogout()">🚪 Sair</button>
     </div>
   </aside>
 
@@ -729,8 +936,8 @@ tbody tr:last-child td { border-bottom:none; }
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
           <label style="font-size:13px;color:var(--text2);font-weight:500">&#x1F4C5; Data:</label>
           <input type="date" id="fech-data" style="background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius);padding:7px 12px;color:var(--text);font-size:13px;outline:none;font-family:inherit" oninput="fechModo='dia';renderFechamento()">
-          <button class="btn btn-ghost btn-sm" onclick="fechModo='dia';document.getElementById('fech-data').value=new Date().toISOString().slice(0,10);renderFechamento()">Hoje</button>
-          <button class="btn btn-ghost btn-sm" onclick="fechModo='dia';document.getElementById('fech-data').value=ontemISO();renderFechamento()">Ontem</button>
+          <button class="btn btn-ghost btn-sm" onclick="fechModo='dia';fechMesRef=null;document.getElementById('fech-data').value=new Date().toISOString().slice(0,10);renderFechamento()">Hoje</button>
+          <button class="btn btn-ghost btn-sm" onclick="fechModo='dia';fechMesRef=null;document.getElementById('fech-data').value=ontemISO();renderFechamento()">Ontem</button>
           <button class="btn btn-ghost btn-sm" onclick="fechSetMes(0)">&#x1F4C6; M&#234;s Atual</button>
           <button class="btn btn-ghost btn-sm" onclick="fechSetMes(-1)">&#9664; M&#234;s Anterior</button>
           <span id="fech-periodo-label" style="font-size:12px;color:var(--accent2);font-weight:600;display:none"></span>
@@ -1169,15 +1376,39 @@ tbody tr:last-child td { border-bottom:none; }
           </table>
         </div>
       </div>
+      <div class="card mb16 admin-only-card">
+        <div class="card-header">
+          <span class="card-title">☁️ Sincronização entre Computadores</span>
+          <button class="btn btn-primary btn-sm" onclick="forcarSyncNuvem()">↻ Forçar sync da nuvem</button>
+        </div>
+        <p class="text-muted" style="font-size:13px;margin-bottom:12px">
+          Se um PC mostra fechamento diferente dos outros (ex: R$ 14k aqui e R$ 16k na loja),
+          clique em <strong>Forçar sync da nuvem</strong> neste computador. Isso descarta o cache
+          local incompleto e baixa todos os dados do Firebase. Confirme que os 4 PCs usam o
+          <strong>mesmo arquivo</strong> <code>index.html</code> atualizado.
+        </p>
+        <div class="form-grid" style="margin-bottom:8px">
+          <div class="form-group">
+            <label>Vendas neste PC</label>
+            <div id="cfg-sync-vendas" class="font-mono" style="font-size:18px;font-weight:700">—</div>
+          </div>
+          <div class="form-group">
+            <label>O.S. neste PC</label>
+            <div id="cfg-sync-ordens" class="font-mono" style="font-size:18px;font-weight:700">—</div>
+          </div>
+        </div>
+        <div id="cfg-sync-status" style="font-size:12px;color:var(--text3)">—</div>
+      </div>
       <div class="card mb16">
         <div class="card-header"><span class="card-title">🗄️ Arquivamento de Dados Antigos</span></div>
         <p class="text-muted" style="font-size:13px;margin-bottom:12px">
-          O banco na nuvem (Firestore) tem limite de 1024KB por documento. Arquive mensalmente os registros
-          com mais de 1 mês: eles são baixados num arquivo (JSON + CSV) e removidos do sistema pra manter o espaço livre.
+          O tamanho abaixo é a soma de <strong>todos</strong> os dados neste PC (vendas + O.S. + movimentações).
+          No Firebase eles ficam em <strong>fatias</strong> (sem limite de 1MB por fatia). Para não estourar
+          a cota gratuita, <strong>arquive meses antigos</strong> — especialmente movimentações (Jun/2026 tem 3461!).
         </p>
         <div class="form-grid" style="margin-bottom:12px">
           <div class="form-group">
-            <label>Tamanho atual na nuvem</label>
+            <label>Tamanho total neste PC</label>
             <div id="cfg-tamanho-nuvem" class="font-mono" style="font-size:20px;font-weight:700">—</div>
           </div>
           <div class="form-group">
@@ -1733,6 +1964,7 @@ function _applyDefaults() {
   if (!db.config) db.config = { nome:'ESC CELL', estqMin:3 };
   if (!db.nextMovId) db.nextMovId = 1;
   if (!db.nextDespId) db.nextDespId = 1;
+  _DB_ARRAY_KEYS.forEach(k => { if (!Array.isArray(db[k])) db[k] = []; });
   _garantirExcluidos();
 }
 
@@ -1747,7 +1979,7 @@ function _applyDefaults() {
 // removidas) reaparecendo depois de sincronizar com outro computador.
 function _garantirExcluidos() {
   if (!db._excluidos) db._excluidos = {};
-  ['vendas', 'ordens', 'movKeys', 'despKeys'].forEach(k => {
+  ['vendas', 'ordens', 'movKeys', 'movIds', 'despKeys'].forEach(k => {
     if (!Array.isArray(db._excluidos[k])) db._excluidos[k] = [];
   });
 }
@@ -1763,6 +1995,8 @@ function _registrarExclusaoPersistente(tipo, valores) {
 // Usados para fundir dados de vários computadores sem se sobrescreverem.
 const _DB_ARRAY_KEYS = ['produtos','vendas','ordens','movimentacoes','despesas','clientes'];
 const _DB_NEXTID_KEYS = ['nextProdId','nextVendaId','nextOSId','nextMovId','nextDespId'];
+// Listas grandes salvas em fatias no Firestore — cache local guarda só ~500 recentes
+const _LISTAS_NUVEM = ['vendas', 'ordens', 'movimentacoes', 'despesas'];
 
 // Carimba um registro com o momento da última alteração. Deve ser chamado
 // toda vez que um registro é criado ou editado, para que a fusão com a
@@ -1811,7 +2045,7 @@ function _mergeDB(local, remote) {
   const excLocal = (local && local._excluidos) || {};
   const excRemoto = (remote && remote._excluidos) || {};
   const excFundidos = {};
-  ['vendas', 'ordens', 'movKeys', 'despKeys'].forEach(k => {
+  ['vendas', 'ordens', 'movKeys', 'movIds', 'despKeys'].forEach(k => {
     excFundidos[k] = [...new Set([...(excLocal[k] || []), ...(excRemoto[k] || [])])];
   });
   merged._excluidos = excFundidos;
@@ -1821,16 +2055,39 @@ function _mergeDB(local, remote) {
   });
 
   // Reaplica as exclusões por cima da união: um registro apagado em
-  // qualquer dispositivo nunca "volta", mesmo que outro dispositivo ainda
+  // qualquer dispositivo nunca "voltar", mesmo que outro dispositivo ainda
   // tenha uma cópia antiga dele localmente ou em cache.
   const idsVendasExcl = new Set(excFundidos.vendas);
   const idsOrdensExcl = new Set(excFundidos.ordens);
   const movKeysExcl = new Set(excFundidos.movKeys);
+  const movIdsExcl = new Set(excFundidos.movIds || []);
   const despKeysExcl = new Set(excFundidos.despKeys);
   if (idsVendasExcl.size) merged.vendas = (merged.vendas || []).filter(v => !idsVendasExcl.has(v.id));
   if (idsOrdensExcl.size) merged.ordens = (merged.ordens || []).filter(o => !idsOrdensExcl.has(o.id));
+  if (movIdsExcl.size) merged.movimentacoes = (merged.movimentacoes || []).filter(m => !movIdsExcl.has(m.id));
   if (movKeysExcl.size) merged.movimentacoes = (merged.movimentacoes || []).filter(m => !movKeysExcl.has(_chaveRegistro(m)));
   if (despKeysExcl.size) merged.despesas = (merged.despesas || []).filter(d => !despKeysExcl.has(_chaveRegistro(d)));
+
+  // Auto-correção: cache local (localStorage) guarda só os 500 registros mais
+  // recentes de cada lista. Se a nuvem tem claramente mais, confia na nuvem.
+  _LISTAS_NUVEM.forEach(key => {
+    const rem = remote[key] || [];
+    const mer = merged[key] || [];
+    if (rem.length > mer.length) {
+      const filtrada = rem.filter(item => {
+        if (key === 'vendas') return !idsVendasExcl.has(item.id);
+        if (key === 'ordens') return !idsOrdensExcl.has(item.id);
+        if (key === 'movimentacoes') return !movIdsExcl.has(item.id) && !movKeysExcl.has(_chaveRegistro(item));
+        if (key === 'despesas') return !despKeysExcl.has(_chaveRegistro(item));
+        return true;
+      });
+      merged[key] = _mergeArraysById(mer, filtrada);
+    }
+  });
+
+  // Duplicatas (mesmo conteúdo, ids diferentes) voltavam após F5 — dedupe
+  // sempre por último, depois de fundir com a nuvem.
+  merged.movimentacoes = _deduplicarMovimentacoes(merged.movimentacoes);
 
   _DB_NEXTID_KEYS.forEach(key => {
     merged[key] = Math.max(parseInt(local[key]) || 0, parseInt(remote[key]) || 0);
@@ -1849,12 +2106,19 @@ function _chaveRegistro(o) {
   try { return JSON.stringify(o); } catch(e) { return String(o); }
 }
 
+function _exclusaoContem(setOuArr, val) {
+  if (!setOuArr) return false;
+  if (typeof setOuArr.has === 'function') return setOuArr.has(val);
+  return Array.isArray(setOuArr) && setOuArr.includes(val);
+}
+
 function _aplicarExclusoesPendentes(excl) {
   if (!excl) return;
-  if (excl.vendas)   db.vendas         = (db.vendas || []).filter(v => !excl.vendas.has(v.id));
-  if (excl.ordens)   db.ordens         = (db.ordens || []).filter(o => !excl.ordens.has(o.id));
-  if (excl.movKeys)  db.movimentacoes  = (db.movimentacoes || []).filter(m => !excl.movKeys.has(_chaveRegistro(m)));
-  if (excl.despKeys) db.despesas       = (db.despesas || []).filter(d => !excl.despKeys.has(_chaveRegistro(d)));
+  if (excl.vendas)   db.vendas         = (db.vendas || []).filter(v => !_exclusaoContem(excl.vendas, v.id));
+  if (excl.ordens)   db.ordens         = (db.ordens || []).filter(o => !_exclusaoContem(excl.ordens, o.id));
+  if (excl.movIds)  db.movimentacoes  = (db.movimentacoes || []).filter(m => !_exclusaoContem(excl.movIds, m.id));
+  if (excl.movKeys)  db.movimentacoes  = (db.movimentacoes || []).filter(m => !_exclusaoContem(excl.movKeys, _chaveRegistro(m)));
+  if (excl.despKeys) db.despesas       = (db.despesas || []).filter(d => !_exclusaoContem(excl.despKeys, _chaveRegistro(d)));
 }
 
 // Salva no localStorage sem nunca travar o resto do código.
@@ -1891,6 +2155,68 @@ function safeSaveLocalStorage(dbToSave) {
   }
 }
 
+function _contarRegistrosSync() {
+  return {
+    vendas: (db.vendas || []).length,
+    ordens: (db.ordens || []).length,
+    total: (db.vendas || []).length + (db.ordens || []).length
+  };
+}
+
+function _atualizarUIAposSync() {
+  const navAtivo = document.querySelector('nav a.active[data-page]');
+  const paginaAtual = navAtivo ? navAtivo.dataset.page : 'dashboard';
+  navigate(paginaAtual);
+  aplicarRestricoesPerfil();
+  renderConfigSyncStatus();
+}
+
+function renderConfigSyncStatus() {
+  const v = document.getElementById('cfg-sync-vendas');
+  const o = document.getElementById('cfg-sync-ordens');
+  if (v) v.textContent = (db.vendas || []).length;
+  if (o) o.textContent = (db.ordens || []).length;
+}
+
+function _aplicarDadosNuvem(remote, opts) {
+  const antes = _contarRegistrosSync();
+  if (opts && opts.substituirListas) {
+    db = {
+      ...remote,
+      produtos: _mergeArraysById(db.produtos, remote.produtos),
+      clientes: _mergeArraysById(db.clientes, remote.clientes),
+    };
+  } else {
+    db = _mergeDB(db, remote);
+  }
+  _applyDefaults();
+  safeSaveLocalStorage(db);
+  return { antes, depois: _contarRegistrosSync() };
+}
+
+async function forcarSyncNuvem() {
+  if (!window._fbLoad) return toast('Firebase não disponível', 'error');
+  toast('⏳ Baixando dados completos da nuvem...');
+  try {
+    const remote = await window._fbLoad();
+    if (!remote) return toast('Não foi possível ler a nuvem', 'error');
+    const { antes, depois } = _aplicarDadosNuvem(remote, { substituirListas: true });
+    _atualizarUIAposSync();
+    const el = document.getElementById('cfg-sync-status');
+    if (el) {
+      el.textContent = 'Última sync forçada: ' + new Date().toLocaleString('pt-BR')
+        + ' — ' + depois.vendas + ' vendas, ' + depois.ordens + ' O.S.';
+    }
+    const ganhou = depois.total - antes.total;
+    toast(ganhou > 0
+      ? `✅ Sync OK! +${ganhou} registro(s) recuperados da nuvem`
+      : '✅ Este PC já estava igual à nuvem');
+  } catch (e) {
+    console.error('forcarSyncNuvem:', e);
+    toast('Erro ao sincronizar: ' + (e.message || e), 'error');
+  }
+}
+
 function loadDB() {
   // Carrega localStorage primeiro para não travar a tela
   try {
@@ -1907,27 +2233,27 @@ function loadDB() {
     window._fbListen((remote) => {
       try {
         if (window._ignorandoSnapshot) { window._snapshotPendente = remote; return; }
-        // Funde (não sobrescreve) — preserva o que já existe localmente
-        db = _mergeDB(db, remote);
-        _applyDefaults();
-        safeSaveLocalStorage(db);
-        const navAtivo = document.querySelector('nav a.active[data-page]');
-        const paginaAtual = navAtivo ? navAtivo.dataset.page : 'dashboard';
-        navigate(paginaAtual);
-        renderDashboard && renderDashboard();
-        aplicarRestricoesPerfil();
+        const antes = _contarRegistrosSync();
+        const { depois } = _aplicarDadosNuvem(remote);
+        _atualizarUIAposSync();
         if (_primeiraSync) {
-          toast('☁️ Dados sincronizados com a nuvem');
           _primeiraSync = false;
           _lembrarArquivamentoSeNecessario();
-          // Limpeza única: a fusão acima acabou de eliminar duplicatas
-          // acumuladas por um bug antigo (registros sem id sendo tratados
-          // como sempre novos a cada salvamento). Salva agora pra gravar
-          // essa versão já limpa de volta na nuvem, em vez de esperar a
-          // próxima ação do usuário.
-          setTimeout(() => { saveDBAgora(); }, 1500);
-        } else {
-          toast('🔄 Dashboard atualizado em tempo real');
+          const ganhou = depois.total - antes.total;
+          if (ganhou > 0) {
+            toast(`☁️ Sync: +${ganhou} registro(s) baixados da nuvem`);
+          } else {
+            toast('☁️ Dados sincronizados com a nuvem');
+          }
+          // Só regrava na nuvem se removeu duplicatas — evita PC desatualizado
+          // sobrescrever dados bons de outro computador.
+          const dups = detectarDuplicatasMovimentacoes().length;
+          if (dups > 0) {
+            db.movimentacoes = _deduplicarMovimentacoes(db.movimentacoes || []);
+            setTimeout(() => saveDBAgora(), 1500);
+          }
+        } else if (depois.total !== antes.total) {
+          toast(`🔄 Atualizado da nuvem (+${depois.total - antes.total} registros)`);
         }
       } catch(e) { console.error('Erro ao aplicar dados do Firebase:', e); }
     });
@@ -1969,6 +2295,10 @@ async function flushToFirebase() {
     // Ignora o próximo snapshot que voltará do próprio save (evita loop)
     window._ignorandoSnapshot = true;
     const payload = JSON.parse(JSON.stringify(db));
+    // Compacta tombstones antigos (JSON enorme) — cabe no doc meta do Firebase
+    if (payload._excluidos && Array.isArray(payload._excluidos.movKeys) && payload._excluidos.movKeys.length > 200) {
+      payload._excluidos.movKeys = [];
+    }
     // Desde que os dados passaram a ser salvos em fatias (chunks) por
     // documento, o limite de 1MB por documento do Firestore deixou de ser
     // um risco prático — cada fatia tem no máximo 150 registros. Ainda
@@ -1988,10 +2318,11 @@ async function flushToFirebase() {
       if (window._snapshotPendente) {
         const pendente = window._snapshotPendente;
         window._snapshotPendente = null;
-        db = _mergeDB(db, pendente);
+        _aplicarDadosNuvem(pendente);
         _aplicarExclusoesPendentes(window._exclusoesPendentes);
         _applyDefaults();
         safeSaveLocalStorage(db);
+        _atualizarUIAposSync();
       }
       // Exclusão já foi aplicada nas duas fusões possíveis deste ciclo de salvamento.
       window._exclusoesPendentes = null;
@@ -2019,11 +2350,11 @@ function _dataArquivoCorte() {
 
 function prepararArquivamento() {
   const corte = _dataArquivoCorte();
-  const vendasAntigas = (db.vendas || []).filter(v => v.data && new Date(v.data) < corte);
+  const vendasAntigas = (db.vendas || []).filter(v => v.data && parseDateFlex(v.data) < corte);
   // OS ainda em andamento nunca são arquivadas, só as já entregues.
-  const ordensAntigas = (db.ordens || []).filter(o => o.status === 'entregue' && o.data && new Date(o.data) < corte);
-  const movAntigas    = (db.movimentacoes || []).filter(m => m.data && new Date(m.data) < corte);
-  const despAntigas   = (db.despesas || []).filter(d => d.data && new Date(d.data) < corte);
+  const ordensAntigas = (db.ordens || []).filter(o => o.status === 'entregue' && o.data && parseDateFlex(o.data) < corte);
+  const movAntigas    = (db.movimentacoes || []).filter(m => m.data && parseDateFlex(m.data) < corte);
+  const despAntigas   = (db.despesas || []).filter(d => d.data && parseDateFlex(d.data) < corte);
 
   const total = vendasAntigas.length + ordensAntigas.length + movAntigas.length + despAntigas.length;
   return { corte, vendasAntigas, ordensAntigas, movAntigas, despAntigas, total };
@@ -2034,7 +2365,7 @@ function prepararArquivamento() {
 // deixar o admin arquivar mês a mês, sem precisar esperar o corte automático.
 function _mesChave(dataStr) {
   const d = parseDateFlex(dataStr);
-  if (isNaN(d)) return null;
+  if (isNaN(d.getTime())) return null;
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
@@ -2198,6 +2529,7 @@ async function _executarArquivamento(prep, sufixoArquivo) {
   _registrarExclusaoPersistente('vendas', [...idsVendas]);
   _registrarExclusaoPersistente('ordens', [...idsOrdens]);
   _registrarExclusaoPersistente('movKeys', prep.movAntigas.map(_chaveRegistro));
+  _registrarExclusaoPersistente('movIds', prep.movAntigas.map(m => m.id).filter(id => id != null));
   _registrarExclusaoPersistente('despKeys', prep.despAntigas.map(_chaveRegistro));
 
   const salvouNaNuvem = await saveDBAgora();
@@ -2231,6 +2563,24 @@ function _assinaturaRegistro(o) {
   const ordenado = {};
   Object.keys(clone).sort().forEach(k => ordenado[k] = clone[k]);
   return JSON.stringify(ordenado);
+}
+
+// Mantém só 1 movimentação por conteúdo (menor id = original).
+// Roda após toda fusão com a nuvem — impede duplicatas de voltarem no F5.
+function _deduplicarMovimentacoes(arr) {
+  if (!Array.isArray(arr) || arr.length < 2) return arr || [];
+  const grupos = new Map();
+  arr.forEach(m => {
+    const sig = _assinaturaRegistro(m);
+    if (!grupos.has(sig)) grupos.set(sig, []);
+    grupos.get(sig).push(m);
+  });
+  const resultado = [];
+  grupos.forEach(lista => {
+    lista.sort((a, b) => (a.id || 0) - (b.id || 0));
+    resultado.push(lista[0]);
+  });
+  return resultado.sort((a, b) => (a.id || 0) - (b.id || 0));
 }
 
 function detectarDuplicatasMovimentacoes() {
@@ -2281,16 +2631,16 @@ async function limparMovimentacoesDuplicadas() {
     `esccell_duplicatas_removidas_${new Date().toISOString().slice(0, 10)}.json`
   );
 
-  const chavesRemover = new Set(duplicatas.map(_chaveRegistro));
-  db.movimentacoes = (db.movimentacoes || []).filter(m => !chavesRemover.has(_chaveRegistro(m)));
+  const idsRemover = duplicatas.map(d => d.id);
+  db.movimentacoes = _deduplicarMovimentacoes(db.movimentacoes || []);
 
-  // Garante que essas duplicatas não "voltem" ao fundir com a cópia da nuvem
+  // Tombstone leve por ID (não JSON inteiro — economiza espaço no doc meta do Firebase)
   window._exclusoesPendentes = window._exclusoesPendentes || {};
-  window._exclusoesPendentes.movKeys = new Set([
-    ...(window._exclusoesPendentes.movKeys || []),
-    ...chavesRemover
+  window._exclusoesPendentes.movIds = new Set([
+    ...(window._exclusoesPendentes.movIds || []),
+    ...idsRemover
   ]);
-  _registrarExclusaoPersistente('movKeys', [...chavesRemover]);
+  _registrarExclusaoPersistente('movIds', idsRemover);
 
   const salvouNaNuvem = await saveDBAgora();
   if (salvouNaNuvem) {
@@ -2328,6 +2678,19 @@ const topbarActions = {
   dashboard:null, pdv:null, vendas:null, produtos:'+ Produto',
   manutencao:'+ Nova O.S.', financeiro:null, fechamento:null, config:null
 };
+
+function _somarPagamentosNoMapa(registro, pagTotais, valorFallback) {
+  if (registro.pagamentos && registro.pagamentos.length > 0) {
+    registro.pagamentos.forEach(p => {
+      const t = p.tipo || 'dinheiro';
+      pagTotais[t] = (pagTotais[t] || 0) + (parseFloat(p.valor) || 0);
+    });
+    return;
+  }
+  const pg = registro.pagamento || 'dinheiro';
+  if (pg === 'misto') return;
+  pagTotais[pg] = (pagTotais[pg] || 0) + (parseFloat(valorFallback) || 0);
+}
 
 function navigate(page) {
   // Bloqueia páginas restritas para funcionário
@@ -2368,17 +2731,20 @@ function topbarAction() {
 // ===== INNER TABS =====
 function innerTab(prefix, tab) {
   // resolver o ID real da page (financeiro usa prefix 'fin' mas page é 'page-financeiro')
-  const pageId = document.getElementById('page-'+prefix) ? 'page-'+prefix : 
+  const pageId = document.getElementById('page-'+prefix) ? 'page-'+prefix :
                  (document.getElementById('page-financeiro') && prefix==='fin' ? 'page-financeiro' : 'page-'+prefix);
   const pageEl = document.getElementById(pageId);
   if (!pageEl) return;
+  const contentId = `${prefix}-${tab}`;
+  const contentEl = document.getElementById(contentId);
+  if (!contentEl) return;
   pageEl.querySelectorAll('.inner-tab').forEach(el => el.classList.remove('active'));
   pageEl.querySelectorAll('.inner-tab-content').forEach(el => el.classList.remove('active'));
   const contents = pageEl.querySelectorAll('.inner-tab-content');
   const tabs = pageEl.querySelectorAll('.inner-tab');
-  document.getElementById(`${prefix}-${tab}`).classList.add('active');
-  const idx = [...contents].findIndex(c => c.id === `${prefix}-${tab}`);
-  if (idx >= 0) tabs[idx].classList.add('active');
+  contentEl.classList.add('active');
+  const idx = [...contents].findIndex(c => c.id === contentId);
+  if (idx >= 0 && tabs[idx]) tabs[idx].classList.add('active');
   if (tab === 'entrada') populateEntradaSelect();
   if (tab === 'historico') renderMovimentacoes();
   if (tab === 'despesas') renderDespesas();
@@ -2621,7 +2987,7 @@ function renderPDV() {
   const cats = [...new Set(db.produtos.map(p=>p.cat))];
   document.getElementById('cat-filters').innerHTML = `
     <button class="badge ${pdvCatFilter===''?'badge-purple':'badge-gray'}" style="cursor:pointer;border:none" onclick="filterCat('')">Todos</button>
-    ${cats.map(c=>`<button class="badge ${pdvCatFilter===c?'badge-purple':'badge-gray'}" style="cursor:pointer;border:none" onclick="filterCat('${c}')">${c}</button>`).join('')}`;
+    ${cats.map(c=>`<button class="badge ${pdvCatFilter===c?'badge-purple':'badge-gray'}" style="cursor:pointer;border:none" onclick="filterCat(${JSON.stringify(c)})">${c.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</button>`).join('')}`;
   filterProducts();
 }
 
@@ -2937,12 +3303,15 @@ function confirmarPagamento() {
   // Trava contra clique duplo/duplo-toque: sem isso, dois cliques rápidos
   // rodavam esta função duas vezes, duplicando a venda e as movimentações
   // de estoque (baixa de estoque repetida para os mesmos itens).
-  if (btnPgto.disabled || _processandoPagamento) return;
+  if (_processandoPagamento) return;
+  if (btnPgto.disabled) return toast('Complete o pagamento antes de confirmar', 'error');
+  if (!multipayItems.length) return toast('Adicione pelo menos uma forma de pagamento', 'error');
   _processandoPagamento = true;
   btnPgto.disabled = true;
   btnPgto.style.opacity = '.5';
   btnPgto.style.cursor = 'not-allowed';
 
+  try {
   const sub = cart.reduce((s,ci)=>s+ci.preco*ci.qty,0);
   const discVal = parseMoney(document.getElementById('discount-val').value);
   const discType = document.getElementById('discount-type').value;
@@ -3005,6 +3374,17 @@ function confirmarPagamento() {
   filterProducts();
   renderVendas();
   mostrarConfirmacaoVenda(novaVendaId, total);
+  } catch (e) {
+    console.error('Erro ao confirmar pagamento:', e);
+    toast('Erro ao finalizar venda. Tente novamente.', 'error');
+    if (btnPgto) {
+      btnPgto.disabled = false;
+      btnPgto.style.opacity = '1';
+      btnPgto.style.cursor = 'pointer';
+    }
+  } finally {
+    _processandoPagamento = false;
+  }
 }
 
 // Mostra uma confirmação simples após a venda, com botão opcional pra
@@ -3109,7 +3489,7 @@ function renderVendas() {
       return `<tr>
         <td class="font-mono" style="color:var(--text3)">#${v.id}</td>
         <td>${new Date(v.data).toLocaleString('pt-BR')}</td>
-        <td style="max-width:200px"><div style="font-size:12px">${v.items.map(i=>`${i.qty}x ${i.nome}`).join(', ')}</div></td>
+        <td style="max-width:200px"><div style="font-size:12px">${(v.items||[]).map(i=>`${i.qty}x ${i.nome}`).join(', ')}</div></td>
         <td style="max-width:160px">${(() => {
           if (v.pagamentos && v.pagamentos.length > 1) {
             const labels = {dinheiro:'💵',pix:'📲',debito:'💳 Déb',credito:'💳 Cré'};
@@ -3513,9 +3893,7 @@ function salvarOS() {
       pag = osMultipayItems[0].tipo;
       parcelas = osMultipayItems[0].parcelas || 1;
     } else {
-      // cria string descritiva para o campo pagamento
-      const labels = {dinheiro:'Dinheiro',pix:'PIX',debito:'Débito',credito:'Crédito'};
-      pag = pagamentosOS.map(p=>`${labels[p.tipo]||p.tipo} ${fmt(p.valor)}`).join(' + ');
+      pag = 'misto';
       parcelas = 1;
     }
   } else {
@@ -3553,10 +3931,13 @@ function salvarOS() {
   if (editingOSId) {
     const idx = db.ordens.findIndex(x=>x.id===editingOSId);
     if (idx>=0) { db.ordens[idx] = _touch({...db.ordens[idx], ...os}); }
+    toast('O.S. atualizada!');
   } else {
     db.ordens.push(_touch({id: db.nextOSId++, ...os}));
+    toast('O.S. criada!');
   }
-  saveDB(); closeModal('modal-os'); renderOS(); toast(editingOSId?'O.S. atualizada!':'O.S. criada!');
+  editingOSId = null;
+  saveDB(); closeModal('modal-os'); renderOS();
 }
 
 function editarOS(id) {
@@ -3578,10 +3959,14 @@ function editarOS(id) {
   document.getElementById('os-valor').value = o.valor;
   document.getElementById('os-custo-peca').value = o.custo_peca;
   document.getElementById('os-taxas').value = o.outras_taxas || 0;
-  document.getElementById('os-pagamento').value = (o.pagamentos && o.pagamentos.length === 1) ? o.pagamentos[0].tipo : (o.pagamento||'dinheiro');
+  document.getElementById('os-pagamento').value = (o.pagamentos && o.pagamentos.length === 1)
+    ? o.pagamentos[0].tipo
+    : ((o.pagamentos && o.pagamentos.length > 1) || o.pagamento === 'misto' ? 'misto' : (o.pagamento || 'dinheiro'));
   if (document.getElementById('os-parcelas')) document.getElementById('os-parcelas').value = (o.pagamentos && o.pagamentos.length === 1) ? (o.pagamentos[0].parcelas||1) : (o.parcelas||1);
   // Restaura multipay
-  osMultipayItems = o.pagamentos ? o.pagamentos.map(p=>({...p})) : [{tipo: o.pagamento||'dinheiro', valor: parseFloat(o.valor)||0, parcelas: o.parcelas||1}];
+  osMultipayItems = (o.pagamentos && o.pagamentos.length)
+    ? o.pagamentos.map(p=>({...p}))
+    : [{tipo: ['dinheiro','pix','debito','credito'].includes(o.pagamento) ? o.pagamento : 'dinheiro', valor: parseFloat(o.valor)||0, parcelas: o.parcelas||1}];
   renderOSMultipay();
   document.getElementById('modal-os-title').textContent = 'Editar O.S. #'+id;
   calcLucroOS();
@@ -3656,7 +4041,7 @@ function renderOS() {
           return o.pagamentos.map(p=>`<span class="badge ${colors[p.tipo]||'badge-gray'}" style="font-size:10px;margin:1px">${labels[p.tipo]||p.tipo} ${fmt(p.valor)}</span>`).join('');
         }
         const pg=o.pagamento||'dinheiro';
-        const cls=pg==='dinheiro'?'badge-green':pg==='pix'?'badge-teal':pg==='debito'?'badge-blue':'badge-purple';
+        const cls=pg==='dinheiro'?'badge-green':pg==='pix'?'badge-teal':pg==='debito'?'badge-blue':pg==='misto'?'badge-gray':'badge-purple';
         return `<span class="badge ${cls}">${pg}${o.parcelas>1?' '+o.parcelas+'x':''}</span>`;
       })()}</td>
       <td class="font-mono" style="color:${(o.lucro>=0)?'var(--green)':'var(--red)'}" title="Lucro = Faturamento − Custo da Peça − Taxas (análise de desempenho)">${fmt(o.lucro??o.lucro_liq??0)}</td>
@@ -3677,7 +4062,8 @@ function renderFinanceiro() {
   const periodo = document.getElementById('fin-periodo')?.value||'mes';
   const now = new Date();
   function inPeriodo(dateStr) {
-    const d = new Date(dateStr);
+    const d = parseDateFlex(dateStr);
+    if (isNaN(d.getTime())) return false;
     if (periodo==='hoje') return d.toDateString()===now.toDateString();
     if (periodo==='semana') {
       const wStart = new Date(now); wStart.setDate(now.getDate()-now.getDay());
@@ -3751,16 +4137,10 @@ function renderFinanceiro() {
   // por pagamento — usa array pagamentos[] se disponível, senão campo simples
   const pagMap = {dinheiro:0, pix:0, debito:0, credito:0};
   vendas.forEach(v=>{
-    if (v.pagamentos && v.pagamentos.length > 0) {
-      v.pagamentos.forEach(p => {
-        const t = p.tipo || 'dinheiro';
-        if (pagMap[t] !== undefined) pagMap[t] += p.valor || 0;
-        else pagMap[t] = (pagMap[t]||0) + (p.valor||0);
-      });
-    } else {
-      const t = v.pagamento || 'dinheiro';
-      pagMap[t] = (pagMap[t]||0) + (v.total||0);
-    }
+    _somarPagamentosNoMapa(v, pagMap, v.total || 0);
+  });
+  ordens.forEach(o => {
+    _somarPagamentosNoMapa(o, pagMap, parseMoney(o.valor));
   });
   // Remove chaves com valor zero para não poluir o gráfico
   Object.keys(pagMap).forEach(k => { if (!pagMap[k]) delete pagMap[k]; });
@@ -3928,6 +4308,7 @@ function simularTaxa() {
 function loadConfig() {
   document.getElementById('cfg-nome').value = db.config.nome||'';
   document.getElementById('cfg-estq-min').value = db.config.estqMin||3;
+  renderConfigSyncStatus();
   renderConfigArquivamento();
 
   const status = document.getElementById('cfg-senha-admin-status');
@@ -4378,6 +4759,7 @@ function imprimirOS(id) {
 </html>`;
 
   const win = window.open('', '_blank', 'width=340,height=750');
+  if (!win) { toast('Permita pop-ups para imprimir', 'error'); return; }
   win.document.write(html);
   win.document.close();
 }
@@ -4630,7 +5012,7 @@ function abrirEditarVenda(id) {
   const v = db.vendas.find(x => x.id === id);
   if (!v) return;
   document.getElementById('ev-id').value = id;
-  evItems = v.items.map(i => ({nome: i.nome, qty: i.qty, preco: i.preco, custo: i.custo || 0}));
+  evItems = v.items.map(i => ({nome: i.nome, qty: i.qty, preco: i.preco, custo: i.custo || 0, cat: i.cat || ''}));
   document.getElementById('ev-desc').value = v.disc || 0;
   document.getElementById('ev-pagamento').value = v.pagamento || 'dinheiro';
   document.getElementById('ev-parcelas').value = v.parcelas || 1;
@@ -4709,7 +5091,7 @@ function salvarEdicaoVenda() {
   const dataISO = dataVal ? new Date(dataVal).toISOString() : db.vendas[vIdx].data;
   db.vendas[vIdx] = _touch({
     ...db.vendas[vIdx],
-    items: evItems.map(i => ({nome: i.nome, qty: i.qty, preco: i.preco, custo: i.custo || 0})),
+    items: evItems.map(i => ({nome: i.nome, qty: i.qty, preco: i.preco, custo: i.custo || 0, cat: i.cat || ''})),
     sub, disc, total, taxa, liquido, custo_total,
     pagamento: pay, parcelas,
     data: dataISO
@@ -4744,11 +5126,11 @@ function parseDateFlex(str) {
 function fechSetMes(offset) {
   fechModo = 'mes';
   const agora = new Date();
-  // Ciclo da loja: do dia 11 de um mês até o dia 10 do mês seguinte
-  // Se hoje é dia >= 11, o ciclo atual começou neste mês
-  // Se hoje é dia <= 10, o ciclo atual começou no mês passado
+  // Ciclo da loja: do dia 10 de um mês até o dia 10 do mês seguinte (inclusive)
+  // Se hoje é dia >= 10, o ciclo atual começou neste mês
+  // Se hoje é dia < 10, o ciclo atual começou no mês passado
   let cicloInicioAno, cicloInicioMes;
-  if (agora.getDate() >= 11) {
+  if (agora.getDate() >= 10) {
     cicloInicioAno = agora.getFullYear();
     cicloInicioMes = agora.getMonth();
   } else {
@@ -4757,19 +5139,19 @@ function fechSetMes(offset) {
     cicloInicioMes = prev.getMonth();
   }
   // Aplica offset (0 = ciclo atual, -1 = anterior, etc.)
-  const refInicio = new Date(cicloInicioAno, cicloInicioMes + offset, 11);
+  const refInicio = new Date(cicloInicioAno, cicloInicioMes + offset, 10);
   const refFim    = new Date(cicloInicioAno, cicloInicioMes + offset + 1, 10);
   fechMesRef = {
     inicioAno: refInicio.getFullYear(),
     inicioMes: refInicio.getMonth(),
-    inicioDia: 11,
+    inicioDia: 10,
     fimAno: refFim.getFullYear(),
     fimMes: refFim.getMonth(),
     fimDia: 10
   };
   // Limpa o input de data para não confundir
   document.getElementById('fech-data').value = '';
-  // Rótulo: "11/Mês_anterior – 10/Mês_ref Ano"
+  // Rótulo: "10/Mês_anterior – 10/Mês_ref Ano"
   const nomeInicio = refInicio.toLocaleDateString('pt-BR', { day: '2-digit', month: 'long' });
   const nomeFim = refFim.toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' });
   document.getElementById('fech-periodo-label').textContent = nomeInicio + ' – ' + nomeFim;
@@ -4780,19 +5162,10 @@ function fechSetMes(offset) {
 function renderFechamento() {
   const periodoLabel = document.getElementById('fech-periodo-label');
 
-  // DEBUG: mostra no console as primeiras datas salvas para diagnóstico
-  if (db.vendas && db.vendas.length > 0) {
-    console.log('[DEBUG fechamento] Exemplo de datas em db.vendas:', db.vendas.slice(0,3).map(v => v.data));
-  }
-  if (db.ordens && db.ordens.length > 0) {
-    console.log('[DEBUG fechamento] Exemplo de datas em db.ordens:', db.ordens.slice(0,3).map(o => o.data));
-  }
-  console.log('[DEBUG fechamento] fechModo:', fechModo, '| fechMesRef:', JSON.stringify(fechMesRef));
-
   let vendasDia, osDia, tituloFiltro;
 
   if (fechModo === 'mes' && fechMesRef) {
-    // Filtro por ciclo da loja: dia 11 do mês anterior até dia 10 do mês de referência (inclusive)
+    // Filtro por ciclo da loja: dia 10 do mês anterior até dia 10 do mês de referência (inclusive)
     const inicio = new Date(fechMesRef.inicioAno, fechMesRef.inicioMes, fechMesRef.inicioDia, 0, 0, 0);
     const fim = new Date(fechMesRef.fimAno, fechMesRef.fimMes, fechMesRef.fimDia, 23, 59, 59);
     vendasDia = (db.vendas || []).filter(v => {
@@ -4879,16 +5252,10 @@ function renderFechamento() {
   const pagColors = { dinheiro: 'var(--green)', pix: 'var(--teal)', debito: 'var(--blue)', credito: 'var(--accent2)' };
 
   vendasDia.forEach(v => {
-    if (v.pagamentos && v.pagamentos.length > 1) {
-      v.pagamentos.forEach(p => { pagTotais[p.tipo] = (pagTotais[p.tipo] || 0) + p.valor; });
-    } else {
-      const pg = v.pagamento || 'dinheiro';
-      pagTotais[pg] = (pagTotais[pg] || 0) + (v.total || 0);
-    }
+    _somarPagamentosNoMapa(v, pagTotais, v.total || 0);
   });
   osDia.forEach(o => {
-    const pg = o.pagamento || 'dinheiro';
-    pagTotais[pg] = (pagTotais[pg] || 0) + (parseFloat(o.valor) || 0);
+    _somarPagamentosNoMapa(o, pagTotais, parseFloat(o.valor) || 0);
   });
 
   const maxPag = Math.max(...Object.values(pagTotais), 1);
@@ -4955,13 +5322,20 @@ function renderFechamento() {
       const val = parseFloat(r.valor) || 0;
       const taxa = calcTaxaOS(r);
       const liq = val - taxa;
-      const pg = r.pagamento || 'dinheiro';
-      const clsPag = pg==='dinheiro'?'badge-green':pg==='pix'?'badge-teal':pg==='debito'?'badge-blue':'badge-purple';
+      let pagHtml;
+      if (r.pagamentos && r.pagamentos.length > 1) {
+        const labels = {dinheiro:'💵',pix:'📲',debito:'💳D',credito:'💳C'};
+        pagHtml = r.pagamentos.map(p => `<span class="badge badge-gray" style="font-size:10px;margin:1px">${labels[p.tipo]||p.tipo} ${fmt(p.valor)}</span>`).join('');
+      } else {
+        const pg = r.pagamento || 'dinheiro';
+        const clsPag = pg==='dinheiro'?'badge-green':pg==='pix'?'badge-teal':pg==='debito'?'badge-blue':pg==='misto'?'badge-gray':'badge-purple';
+        pagHtml = `<span class="badge ${clsPag}">${pg}${r.parcelas>1?' '+r.parcelas+'x':''}</span>`;
+      }
       return `<tr style="background:rgba(20,184,166,0.04)">
         <td class="font-mono" style="color:var(--teal)">OS#${r.id}</td>
         <td class="text-sm">${hora}</td>
         <td style="max-width:200px"><div style="font-size:11px;color:var(--teal);font-weight:600">🔧 Manutenção</div><div style="font-size:12px">${r.marca} ${r.modelo}</div><div class="text-sm">${r.cliente}</div></td>
-        <td><span class="badge ${clsPag}">${pg}</span></td>
+        <td>${pagHtml}</td>
         <td class="font-mono">${fmt(val)}</td>
         <td class="font-mono" style="color:var(--amber)">${fmt(taxa)}</td>
         <td class="font-mono" style="color:var(--red)">—</td>
@@ -5005,8 +5379,8 @@ function imprimirFechamento() {
     const dateVal = document.getElementById('fech-data').value;
     if (!dateVal) return toast('Selecione uma data', 'error');
     filtroData = new Date(dateVal + 'T12:00:00').toLocaleDateString('pt-BR');
-    vendasDia = (db.vendas||[]).filter(v => new Date(v.data).toLocaleDateString('pt-BR') === filtroData);
-    osDia = (db.ordens||[]).filter(o => o.status==='entregue' && new Date(o.data).toLocaleDateString('pt-BR') === filtroData);
+    vendasDia = (db.vendas||[]).filter(v => parseDateFlex(v.data).toLocaleDateString('pt-BR') === filtroData);
+    osDia = (db.ordens||[]).filter(o => o.status==='entregue' && parseDateFlex(o.data).toLocaleDateString('pt-BR') === filtroData);
   }
 
   const bruto = document.getElementById('fech-bruto').textContent;
@@ -5073,6 +5447,7 @@ function imprimirFechamento() {
   </body></html>`;
 
   const win = window.open('', '_blank', 'width=800,height=700');
+  if (!win) { toast('Permita pop-ups para imprimir', 'error'); return; }
   win.document.write(html);
   win.document.close();
 }
