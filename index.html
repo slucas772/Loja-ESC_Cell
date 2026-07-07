@@ -1190,6 +1190,19 @@ tbody tr:last-child td { border-bottom:none; }
           </div>
         </div>
         <button class="btn btn-primary btn-sm" onclick="arquivarDadosAntigos()">🗄️ Arquivar dados com mais de 1 mês</button>
+        <div style="margin-top:18px">
+          <label style="display:block;margin-bottom:8px">Arquivar mês específico</label>
+          <p class="text-muted" style="font-size:12px;margin-bottom:10px">
+            Todos os meses que têm dados no sistema aparecem abaixo. Você pode arquivar um mês por vez, mesmo que
+            ele ainda não tenha completado 1 mês de idade — útil quando o banco está muito cheio e precisa liberar espaço rápido.
+          </p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Mês</th><th>Vendas</th><th>O.S.</th><th>Movim.</th><th>Despesas</th><th>Total</th><th></th></tr></thead>
+              <tbody id="cfg-meses-tbody"><tr><td colspan="7" style="text-align:center;color:var(--text3);padding:20px">—</td></tr></tbody>
+            </table>
+          </div>
+        </div>
       </div>
       <div class="card mb16 admin-only-card">
         <div class="card-header"><span class="card-title">🔑 Senha de Administrador</span></div>
@@ -1715,18 +1728,38 @@ function _applyDefaults() {
 const _DB_ARRAY_KEYS = ['produtos','vendas','ordens','movimentacoes','despesas','clientes'];
 const _DB_NEXTID_KEYS = ['nextProdId','nextVendaId','nextOSId','nextMovId','nextDespId'];
 
-// Funde duas listas pelo campo id. Em caso de conflito de id, prioriza 'a'.
-// Itens sem id (registros antigos, de antes desse campo existir) usam o
-// próprio conteúdo como chave — assim, duas cópias idênticas do mesmo
-// registro (ex: vindas da nuvem e do local) se fundem em uma só, em vez de
-// serem tratadas como "sempre novas" e duplicadas a cada salvamento.
+// Carimba um registro com o momento da última alteração. Deve ser chamado
+// toda vez que um registro é criado ou editado, para que a fusão com a
+// nuvem (abaixo) saiba qual versão é realmente a mais recente.
+function _touch(obj) {
+  if (obj) obj._ts = Date.now();
+  return obj;
+}
+
+// Funde duas listas pelo campo id. Em caso de conflito de id, vence quem
+// tiver o carimbo _ts mais recente (não mais "local sempre ganha").
+// Isso evita que um PC com cache desatualizado reverta, na sincronização,
+// uma alteração (ex: fechar uma O.S.) já feita em outro dispositivo.
+// Itens sem _ts (registros antigos, de antes desse campo existir) são
+// tratados como os mais antigos possíveis, para não vencerem por engano.
+// Itens sem id usam o próprio conteúdo como chave — assim, duas cópias
+// idênticas do mesmo registro (vindas da nuvem e do local) se fundem em
+// uma só, em vez de serem tratadas como "sempre novas" e duplicadas.
 function _mergeArraysById(a, b) {
   if (!Array.isArray(a)) a = [];
   if (!Array.isArray(b)) b = [];
   const map = new Map();
   const chave = item => item.id != null ? item.id : ('__semid__' + _chaveRegistro(item));
-  b.forEach(item => { if (item) map.set(chave(item), item); });
-  a.forEach(item => { if (item) map.set(chave(item), item); });
+  const tsDe = item => (typeof item._ts === 'number') ? item._ts : 0;
+  const considerar = item => {
+    if (!item) return;
+    const k = chave(item);
+    const existente = map.get(k);
+    // Só substitui se o novo item for mais recente (ou se não havia nada ainda).
+    if (!existente || tsDe(item) >= tsDe(existente)) map.set(k, item);
+  };
+  b.forEach(considerar); // remoto (nuvem)
+  a.forEach(considerar); // local — só vence se for mais novo
   return [...map.values()];
 }
 
@@ -1935,6 +1968,93 @@ function prepararArquivamento() {
   return { corte, vendasAntigas, ordensAntigas, movAntigas, despAntigas, total };
 }
 
+// ── Lista TODOS os meses que têm dados (vendas, O.S., movimentações,
+// despesas), independente de já terem passado 1 mês ou não. Usado pra
+// deixar o admin arquivar mês a mês, sem precisar esperar o corte automático.
+function _mesChave(dataStr) {
+  const d = parseDateFlex(dataStr);
+  if (isNaN(d)) return null;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function _mesLabel(chave) {
+  const [ano, mes] = chave.split('-').map(Number);
+  const d = new Date(ano, mes - 1, 1);
+  const label = d.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+function listarMesesComDados() {
+  const meses = {}; // chave "YYYY-MM" -> {vendas, ordens, mov, desp}
+  const add = (chave, campo) => {
+    if (!chave) return;
+    if (!meses[chave]) meses[chave] = { vendas: 0, ordens: 0, mov: 0, desp: 0 };
+    meses[chave][campo]++;
+  };
+  (db.vendas || []).forEach(v => add(_mesChave(v.data), 'vendas'));
+  (db.ordens || []).filter(o => o.status === 'entregue').forEach(o => add(_mesChave(o.data), 'ordens'));
+  (db.movimentacoes || []).forEach(m => add(_mesChave(m.data), 'mov'));
+  (db.despesas || []).forEach(d => add(_mesChave(d.data), 'desp'));
+
+  return Object.keys(meses)
+    .sort() // "YYYY-MM" ordena cronologicamente como string
+    .map(chave => ({
+      chave,
+      label: _mesLabel(chave),
+      ...meses[chave],
+      total: meses[chave].vendas + meses[chave].ordens + meses[chave].mov + meses[chave].desp
+    }));
+}
+
+function renderMesesArquivaveis() {
+  const tbody = document.getElementById('cfg-meses-tbody');
+  if (!tbody) return;
+  const meses = listarMesesComDados();
+  if (!meses.length) {
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:20px">Nenhum dado encontrado</td></tr>';
+    return;
+  }
+  const mesAtualChave = _mesChave(new Date().toISOString());
+  tbody.innerHTML = meses.map(m => {
+    const ehMesAtual = m.chave === mesAtualChave;
+    return `<tr>
+      <td style="font-weight:600">${m.label}${ehMesAtual ? ' <span class="badge badge-blue" style="font-size:10px">mês atual</span>' : ''}</td>
+      <td class="font-mono">${m.vendas}</td>
+      <td class="font-mono">${m.ordens}</td>
+      <td class="font-mono">${m.mov}</td>
+      <td class="font-mono">${m.desp}</td>
+      <td class="font-mono" style="font-weight:700">${m.total}</td>
+      <td><button class="btn btn-ghost btn-sm" onclick="arquivarMesEspecifico('${m.chave}')">🗄️ Arquivar</button></td>
+    </tr>`;
+  }).join('');
+}
+
+function prepararArquivamentoMes(chave) {
+  const [ano, mes] = chave.split('-').map(Number);
+  const inicio = new Date(ano, mes - 1, 1, 0, 0, 0);
+  const fim = new Date(ano, mes, 0, 23, 59, 59, 999); // último dia do mês
+  const dentro = d => d >= inicio && d <= fim;
+
+  const vendasAntigas = (db.vendas || []).filter(v => v.data && dentro(parseDateFlex(v.data)));
+  const ordensAntigas = (db.ordens || []).filter(o => o.status === 'entregue' && o.data && dentro(parseDateFlex(o.data)));
+  const movAntigas    = (db.movimentacoes || []).filter(m => m.data && dentro(parseDateFlex(m.data)));
+  const despAntigas   = (db.despesas || []).filter(d => d.data && dentro(parseDateFlex(d.data)));
+
+  const total = vendasAntigas.length + ordensAntigas.length + movAntigas.length + despAntigas.length;
+  return { corte: fim, inicio, fim, vendasAntigas, ordensAntigas, movAntigas, despAntigas, total };
+}
+
+function arquivarMesEspecifico(chave) {
+  const prep = prepararArquivamentoMes(chave);
+  if (prep.total === 0) {
+    toast('Nenhum dado encontrado para ' + _mesLabel(chave), 'error');
+    return;
+  }
+  const ok = confirm(`Isso vai baixar um arquivo com ${prep.total} registro(s) de ${_mesLabel(chave)} e REMOVÊ-LOS do sistema (nuvem e local). Deseja continuar?`);
+  if (!ok) return;
+  _executarArquivamento(prep, `_${chave}`);
+}
+
 function arquivarDadosAntigos() {
   const prep = prepararArquivamento();
   if (prep.total === 0) {
@@ -1956,9 +2076,10 @@ function _baixarArquivo(blob, nomeArquivo) {
   a.remove();
 }
 
-async function _executarArquivamento(prep) {
+async function _executarArquivamento(prep, sufixoArquivo) {
   const antesKB = _tamanhoAtualKB();
   const hojeStr = new Date().toISOString().slice(0, 10);
+  const sufixo = sufixoArquivo || '';
 
   const arquivo = {
     geradoEm: new Date().toISOString(),
@@ -1973,7 +2094,7 @@ async function _executarArquivamento(prep) {
   // Backup completo e fiel em JSON (pra reimportar se precisar no futuro)
   _baixarArquivo(
     new Blob([JSON.stringify(arquivo, null, 2)], { type: 'application/json' }),
-    `esccell_arquivo_${hojeStr}.json`
+    `esccell_arquivo${sufixo}_${hojeStr}.json`
   );
 
   // Planilha simples de vendas + O.S. em CSV, pra abrir direto no Excel
@@ -1989,7 +2110,7 @@ async function _executarArquivamento(prep) {
   setTimeout(() => {
     _baixarArquivo(
       new Blob(['\uFEFF' + linhas.join('\n')], { type: 'text/csv;charset=utf-8' }),
-      `esccell_arquivo_vendas_os_${hojeStr}.csv`
+      `esccell_arquivo_vendas_os${sufixo}_${hojeStr}.csv`
     );
   }, 400); // pequeno atraso pra evitar bloqueio de pop-up com 2 downloads seguidos
 
@@ -2252,18 +2373,19 @@ function salvarProduto() {
       p.codigo=document.getElementById('prod-codigo').value; p.custo=custo; p.venda=venda; p.qty=qty;
       p.min=parseInt(document.getElementById('prod-min').value)||3;
       p.obs=document.getElementById('prod-obs').value;
-      if (diff !== 0) db.movimentacoes.push({id:db.nextMovId++,data:new Date().toISOString(),produto:nome,tipo:'ajuste',qty:diff,obs:'Edição manual'});
+      _touch(p);
+      if (diff !== 0) db.movimentacoes.push(_touch({id:db.nextMovId++,data:new Date().toISOString(),produto:nome,tipo:'ajuste',qty:diff,obs:'Edição manual'}));
     }
   } else {
     const id = db.nextProdId++;
-    db.produtos.push({
+    db.produtos.push(_touch({
       id, nome, cat, marca:document.getElementById('prod-marca').value,
       modelo:document.getElementById('prod-modelo').value, variacao:document.getElementById('prod-variacao').value,
       codigo:document.getElementById('prod-codigo').value, custo, venda, qty,
       min:parseInt(document.getElementById('prod-min').value)||3,
       obs:document.getElementById('prod-obs').value
-    });
-    if (qty > 0) db.movimentacoes.push({id:db.nextMovId++,data:new Date().toISOString(),produto:nome,tipo:'entrada',qty,obs:'Cadastro inicial'});
+    }));
+    if (qty > 0) db.movimentacoes.push(_touch({id:db.nextMovId++,data:new Date().toISOString(),produto:nome,tipo:'entrada',qty,obs:'Cadastro inicial'}));
   }
   saveDB(); closeModal('modal-produto'); renderProdutos();
   toast(editingProdId?'Produto atualizado!':'Produto cadastrado!');
@@ -2683,7 +2805,8 @@ function confirmarPagamento() {
     const p = db.produtos.find(x=>x.id===ci.id);
     if (p) {
       p.qty = Math.max(0, p.qty - ci.qty);
-      db.movimentacoes.push({id:db.nextMovId++,data:new Date().toISOString(),produto:p.nome,tipo:'saída',qty:ci.qty,obs:`Venda #${db.nextVendaId}`});
+      _touch(p);
+      db.movimentacoes.push(_touch({id:db.nextMovId++,data:new Date().toISOString(),produto:p.nome,tipo:'saída',qty:ci.qty,obs:`Venda #${db.nextVendaId}`}));
     }
   });
 
@@ -2694,7 +2817,7 @@ function confirmarPagamento() {
   const totalNoDinheiro = Math.max(0, total - parteOutrosConfirm);
   const troco = (temDinheiro && recebidoDinheiro > totalNoDinheiro) ? parseFloat((recebidoDinheiro - totalNoDinheiro).toFixed(2)) : 0;
 
-  db.vendas.push({
+  db.vendas.push(_touch({
     id: db.nextVendaId++, data: new Date().toISOString(),
     items: cart.map(ci=>({nome:ci.nome, qty:ci.qty, preco:ci.preco, custo:ci.custo, cat:ci.cat||''})),
     sub, disc, total,
@@ -2706,7 +2829,7 @@ function confirmarPagamento() {
     parcelas: parcelasPrimario,
     troco: troco,
     recebidoDinheiro: temDinheiro ? recebidoDinheiro : 0
-  });
+  }));
   // Salva AGORA (sem debounce) — a venda precisa estar gravada antes de
   // qualquer janela de impressão abrir, pra nunca depender de fechar o cupom.
   saveDBAgora();
@@ -3011,10 +3134,11 @@ function registrarEntrada() {
   p.qty += qty;
   const custo = parseMoney(document.getElementById('entrada-custo').value);
   if (custo > 0) p.custo = custo;
-  db.movimentacoes.push({
+  _touch(p);
+  db.movimentacoes.push(_touch({
     id: db.nextMovId++, data: new Date().toISOString(), produto: p.nome, tipo:'entrada', qty,
     obs: document.getElementById('entrada-obs').value || document.getElementById('entrada-fornecedor').value || 'Entrada manual'
-  });
+  }));
   saveDB(); renderEstoque(); renderMovimentacoes(); toast(`+${qty} unidades adicionadas a ${p.nome}`);
 }
 
@@ -3254,9 +3378,9 @@ function salvarOS() {
   
   if (editingOSId) {
     const idx = db.ordens.findIndex(x=>x.id===editingOSId);
-    if (idx>=0) { db.ordens[idx] = {...db.ordens[idx], ...os}; }
+    if (idx>=0) { db.ordens[idx] = _touch({...db.ordens[idx], ...os}); }
   } else {
-    db.ordens.push({id: db.nextOSId++, ...os});
+    db.ordens.push(_touch({id: db.nextOSId++, ...os}));
   }
   saveDB(); closeModal('modal-os'); renderOS(); toast(editingOSId?'O.S. atualizada!':'O.S. criada!');
 }
@@ -3489,10 +3613,10 @@ function registrarDespesa() {
   const valor = parseMoney(document.getElementById('desp-valor').value);
   const data = document.getElementById('desp-data').value;
   if (!desc || valor<=0) return toast('Preencha descrição e valor','error');
-  db.despesas.push({
+  db.despesas.push(_touch({
     id: db.nextDespId++, desc, valor, cat: document.getElementById('desp-cat').value,
     data: data ? new Date(data+'T12:00:00').toISOString() : new Date().toISOString()
-  });
+  }));
   saveDB(); renderDespesas(); renderFinanceiro();
   document.getElementById('desp-desc').value='';
   document.getElementById('desp-valor').value='';
@@ -3636,6 +3760,7 @@ function renderConfigArquivamento() {
   elUlt.textContent = db.ultimoArquivamento
     ? new Date(db.ultimoArquivamento).toLocaleString('pt-BR')
     : 'Nunca arquivado';
+  renderMesesArquivaveis();
 }
 
 function salvarConfig() {
@@ -4387,13 +4512,13 @@ function salvarEdicaoVenda() {
   const custo_total = evItems.reduce((s, i) => s + (i.custo * i.qty), 0);
   const dataVal = document.getElementById('ev-data').value;
   const dataISO = dataVal ? new Date(dataVal).toISOString() : db.vendas[vIdx].data;
-  db.vendas[vIdx] = {
+  db.vendas[vIdx] = _touch({
     ...db.vendas[vIdx],
     items: evItems.map(i => ({nome: i.nome, qty: i.qty, preco: i.preco, custo: i.custo || 0})),
     sub, disc, total, taxa, liquido, custo_total,
     pagamento: pay, parcelas,
     data: dataISO
-  };
+  });
   saveDB();
   renderVendas();
   renderDashboard();
