@@ -25,6 +25,7 @@
   const app = initializeApp(firebaseConfig);
   const firestore = getFirestore(app);
   const auth = getAuth(app);
+  window._fbAuthUser = () => auth.currentUser;
 
   // ── salva log de login/logout na coleção 'login_logs' ──
   async function registrarLog(email, tipo) {
@@ -97,6 +98,7 @@
 
       meta._chunkCounts = chunkCounts;
       meta._formatoFatiado = true;
+      meta._updatedAt = Date.now();
       escritas.push(setDoc(doc(firestore, 'esccell', 'db'), meta));
 
       await Promise.all(escritas);
@@ -105,19 +107,36 @@
     } catch(e) { console.error('Firebase save error:', e); return false; }
   };
 
-  window._fbLoad = async function() {
+  window._fbLoadMeta = async function() {
+    try {
+      const snap = await getDoc(doc(firestore, 'esccell', 'db'));
+      return snap.exists() ? snap.data() : null;
+    } catch (e) { console.error('Firebase meta error:', e); return null; }
+  };
+
+  window._fbLoad = async function(options) {
+    const forceFull = !!(options && options.forceFull);
     try {
       const snap = await getDoc(doc(firestore, 'esccell', 'db'));
       if (!snap.exists()) return null;
       const meta = snap.data();
       const chunkCounts = meta._chunkCounts || {};
+      const prevCounts = window._ultimoChunkCounts || {};
+      const cache = window._fbLoadedData || {};
+      const newUpdated = meta._updatedAt || 0;
+      const prevUpdated = window._ultimoRemoteUpdatedAt || 0;
+      const countsIguais = CHUNKED_KEYS.every(k => (chunkCounts[k] || 0) === (prevCounts[k] || 0));
+      const metaChanged = forceFull || !newUpdated || newUpdated !== prevUpdated || !countsIguais;
       const resultado = { ...meta };
 
       const leituras = [];
       CHUNKED_KEYS.forEach(key => {
         if (meta._formatoFatiado) {
-          // Formato novo: lê as fatias da coleção 'esccell_data'
           const n = chunkCounts[key] || 0;
+          if (!metaChanged && cache[key] && Array.isArray(cache[key])) {
+            resultado[key] = cache[key];
+            return;
+          }
           const promessasChave = [];
           for (let i = 0; i < n; i++) {
             promessasChave.push(getDoc(doc(firestore, 'esccell_data', `${key}_${i}`)));
@@ -128,39 +147,61 @@
             resultado[key] = arr;
           }));
         } else {
-          // Formato antigo (compatibilidade): a lista ainda está inline no doc principal
           resultado[key] = Array.isArray(meta[key]) ? meta[key] : [];
         }
       });
       await Promise.all(leituras);
 
       window._ultimoChunkCounts = chunkCounts;
+      window._ultimoRemoteUpdatedAt = newUpdated;
+      window._fbLoadedData = {
+        vendas: resultado.vendas,
+        ordens: resultado.ordens,
+        movimentacoes: resultado.movimentacoes,
+        despesas: resultado.despesas,
+      };
       return resultado;
     } catch(e) { console.error('Firebase load error:', e); return null; }
   };
 
-  // ── escuta mudanças em tempo real no Firestore ──
-  // Escuta o doc principal E a coleção de fatias (esccell_data). Só ouvir
-  // esccell/db não bastava: em alguns PCs a fatia de vendas/O.S. mudava mas
-  // o listener não recarregava, deixando o fechamento desatualizado (ex: 14k vs 16k).
+  // Escuta só o doc meta (esccell/db). Cada save atualiza _chunkCounts + _updatedAt;
+  // ouvir a coleção inteira esccell_data gerava dezenas de leituras por venda.
   window._fbListen = function(callback) {
     let reloadTimer = null;
-    const agendarReload = () => {
-      clearTimeout(reloadTimer);
-      reloadTimer = setTimeout(async () => {
-        try {
-          const completo = await window._fbLoad();
-          if (completo) callback(completo);
-        } catch(e) { console.error('Firebase listen error:', e); }
-      }, 500);
+    let ultimoReloadMs = 0;
+    const DEBOUNCE_MS = 2500;
+    const MIN_INTERVAL_MS = 10000;
+
+    const executarReload = async () => {
+      ultimoReloadMs = Date.now();
+      try {
+        const completo = await window._fbLoad();
+        if (completo) {
+          window._ultimoRemoteCache = completo;
+          window._ultimoRemoteCacheAt = Date.now();
+          callback(completo);
+        }
+      } catch (e) { console.error('Firebase listen error:', e); }
     };
+
+    const agendarReload = () => {
+      if (window._ignorandoSnapshot) return;
+      clearTimeout(reloadTimer);
+      reloadTimer = setTimeout(() => {
+        const agora = Date.now();
+        const espera = Math.max(0, MIN_INTERVAL_MS - (agora - ultimoReloadMs));
+        if (espera > 0) {
+          reloadTimer = setTimeout(executarReload, espera);
+        } else {
+          executarReload();
+        }
+      }, DEBOUNCE_MS);
+    };
+
     const unsubDb = onSnapshot(doc(firestore, 'esccell', 'db'), (snap) => {
       if (snap.exists()) agendarReload();
     }, (err) => console.error('Firebase listen error:', err));
-    const unsubChunks = onSnapshot(collection(firestore, 'esccell_data'), () => {
-      agendarReload();
-    }, (err) => console.error('Firebase chunks listen error:', err));
-    return () => { unsubDb(); unsubChunks(); clearTimeout(reloadTimer); };
+    return () => { unsubDb(); clearTimeout(reloadTimer); };
   };
 
   window._fbLogin = async function(email, password) {
@@ -197,25 +238,45 @@
     sessionStorage.removeItem('_unloadTime');
   });
 
-  // ── E-mails com permissão de ADMIN (acesso total) ──
-  // Adicione aqui os e-mails das contas admin (sua esposa, você etc.)
-  const ADMIN_EMAILS = [
-    'esc_cell@hotmail.com',
-    'gbriella43@gmail.com',
-  ];
+  // Admin: Firebase Auth + opcional Firestore (adminEmails / funcionarioEmails) ou claim admin
+  function _ehEmailFuncionario(email, data) {
+    const e = String(email || '').toLowerCase().trim();
+    if (!e) return true;
+    if (Array.isArray(data?.funcionarioEmails) && data.funcionarioEmails.length) {
+      return data.funcionarioEmails.some(x => String(x).toLowerCase().trim() === e);
+    }
+    // Conta de balcão padrão (ex: funcionario@esccell.com) — demais logins = admin
+    return /^funcionario@/i.test(e);
+  }
 
-  onAuthStateChanged(auth, user => {
+  window._resolverPerfilAdmin = async function(user) {
+    if (!user?.email) return false;
+    const email = user.email.toLowerCase().trim();
+    try {
+      const token = await user.getIdTokenResult();
+      if (token.claims?.admin === true) return true;
+      if (token.claims?.role === 'funcionario') return false;
+    } catch (e) { /* token */ }
+    let data = {};
+    try {
+      const snap = await getDoc(doc(firestore, 'esccell', 'db'));
+      if (snap.exists()) data = snap.data();
+    } catch (e) { console.error('Erro ao ler perfil no Firestore:', e); }
+    if (Array.isArray(data.adminEmails) && data.adminEmails.length) {
+      return data.adminEmails.some(e => String(e).toLowerCase().trim() === email);
+    }
+    return !_ehEmailFuncionario(email, data);
+  };
+
+  onAuthStateChanged(auth, async user => {
     if (user) {
-      // Define o perfil do usuário logado
-      const isAdmin = ADMIN_EMAILS.map(e => e.toLowerCase()).includes(user.email.toLowerCase());
       window.currentUserEmail = user.email;
-      window.currentUserRole  = isAdmin ? 'admin' : 'funcionario';
+      window.currentUserRole = (await window._resolverPerfilAdmin(user)) ? 'admin' : 'funcionario';
 
       document.getElementById('login-screen').style.display = 'none';
       document.getElementById('app').style.display = 'flex';
       window.dispatchEvent(new Event('firebase-ready'));
 
-      // Aplica restrições de interface para funcionário
       setTimeout(() => aplicarRestricoesPerfil(), 300);
     } else {
       window.currentUserEmail = null;
@@ -349,7 +410,7 @@ html[data-theme="dark"] {
 }
 
 *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
-html { -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; }
+html { -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; overscroll-behavior:none; }
 body {
   font-family:'Inter',system-ui,-apple-system,sans-serif;
   background:var(--bg);
@@ -357,11 +418,15 @@ body {
   min-height:100vh;
   font-size:14px;
   line-height:1.55;
+  overscroll-behavior:none;
 }
 
 /* LAYOUT */
-.app { display:flex; flex-direction:column; height:100vh; overflow:hidden; }
-.main { flex:1; overflow:hidden; display:flex; flex-direction:column; min-height:0; background:var(--bg); }
+.app { display:flex; flex-direction:column; height:100vh; max-height:100vh; overflow:hidden; }
+.main {
+  flex:1; min-height:0; background:var(--bg);
+  display:flex; flex-direction:column; overflow:hidden;
+}
 
 /* ── TOP NAV + MENU DROPDOWN ── */
 .topnav {
@@ -476,9 +541,10 @@ body {
 /* Subheader da página (título + ação) */
 .subheader {
   padding:12px 24px;
-  background:var(--bg2);
+  background:var(--bg);
   border-bottom:1px solid var(--border);
-  display:flex; align-items:center; justify-content:space-between; flex-shrink:0;
+  display:flex; align-items:center; justify-content:space-between;
+  flex-shrink:0;
 }
 .subheader h2 { font-size:17px; font-weight:600; letter-spacing:-0.01em; color:var(--text); }
 .subheader-actions { display:flex; gap:10px; align-items:center; }
@@ -510,9 +576,14 @@ body {
 .btn-sm { padding:6px 12px; font-size:12px; border-radius:6px; }
 .btn-icon { padding:7px; border-radius:6px; min-width:32px; min-height:32px; }
 
-/* TABS (pages) */
-.page { display:none; padding:28px; flex:1; min-height:0; }
-.page.active { display:block; overflow-y:auto; }
+/* TABS (pages) — scroll interno igual Histórico de Vendas */
+.page { display:none; padding:16px 24px 28px; flex:1; min-height:0; }
+.page.active {
+  display:block;
+  overflow-x:hidden; overflow-y:auto;
+  overscroll-behavior:contain;
+  -webkit-overflow-scrolling:touch;
+}
 
 /* CARDS */
 .card {
@@ -958,6 +1029,9 @@ html[data-theme="dark"] .nav-mega-panel { box-shadow:0 12px 40px rgba(0,0,0,0.45
               <a onclick="navigate('produtos')" id="nav-produtos" data-page="produtos">
                 <span class="ic">📱</span><span>Produtos / Estoque</span>
               </a>
+              <a class="nav-only-admin" onclick="navigate('config')" id="nav-config" data-page="config" style="display:none">
+                <span class="ic">⚙️</span><span>Configurações</span>
+              </a>
             </div>
             <div class="nav-mega-col">
               <div class="nav-mega-label">Serviços</div>
@@ -973,9 +1047,6 @@ html[data-theme="dark"] .nav-mega-panel { box-shadow:0 12px 40px rgba(0,0,0,0.45
               <a onclick="navigate('fechamento')" id="nav-fechamento" data-page="fechamento">
                 <span class="ic">📅</span><span>Fechamento</span>
               </a>
-              <a onclick="navigate('config')" id="nav-config" data-page="config">
-                <span class="ic">⚙️</span><span>Configurações</span>
-              </a>
             </div>
           </div>
         </div>
@@ -990,6 +1061,7 @@ html[data-theme="dark"] .nav-mega-panel { box-shadow:0 12px 40px rgba(0,0,0,0.45
       <div class="topnav-right" id="topnav-actions">
         <span class="topnav-user" id="sidebar-user-email"></span>
         <span class="badge-time font-mono" id="clock">--:--:--</span>
+        <button type="button" class="btn btn-ghost btn-sm nav-only-admin" id="btn-top-config" style="display:none" onclick="navigate('config')" title="Configurações">⚙️ Config</button>
         <button type="button" class="btn btn-ghost btn-sm" id="btn-tema" onclick="toggleTema()">🌙 Modo Escuro</button>
         <button type="button" class="btn-logout" onclick="doLogout()">Sair</button>
       </div>
@@ -1536,10 +1608,12 @@ html[data-theme="dark"] .nav-mega-panel { box-shadow:0 12px 40px rgba(0,0,0,0.45
 
     </div>
 
-    <!-- ===== CONFIG ===== -->
+    <!-- ===== CONFIG (layout igual Histórico de Vendas) ===== -->
     <div class="page" id="page-config">
       <div class="card mb16">
-        <div class="card-header"><span class="card-title">⚙️ Configurações da Loja</span></div>
+        <div class="card-header">
+          <span class="card-title">⚙️ Configurações</span>
+        </div>
         <div class="form-grid">
           <div class="form-group">
             <label>Nome da Loja</label>
@@ -2011,7 +2085,7 @@ let ADMIN_ACTION_PASSWORD = null;
 
 async function carregarSenhaAdmin() {
   try {
-    const data = await window._fbLoad();
+    const data = window._fbLoadMeta ? await window._fbLoadMeta() : await window._fbLoad();
     if (data && data.senhaAdmin) {
       ADMIN_ACTION_PASSWORD = data.senhaAdmin;
     } else {
@@ -2027,11 +2101,34 @@ async function carregarSenhaAdmin() {
 
 function isAdmin() { return window.currentUserRole === 'admin'; }
 
+async function atualizarPerfilAdmin() {
+  const email = (window.currentUserEmail || '').toLowerCase().trim();
+  if (!email) return;
+  const user = typeof window._fbAuthUser === 'function' ? window._fbAuthUser() : null;
+  if (user && typeof window._resolverPerfilAdmin === 'function') {
+    window.currentUserRole = (await window._resolverPerfilAdmin(user)) ? 'admin' : 'funcionario';
+  } else {
+    const data = db || {};
+    if (Array.isArray(data.adminEmails) && data.adminEmails.length) {
+      window.currentUserRole = data.adminEmails.some(e => String(e).toLowerCase().trim() === email)
+        ? 'admin' : 'funcionario';
+    } else {
+      const ehFunc = (Array.isArray(data.funcionarioEmails) && data.funcionarioEmails.some(
+        e => String(e).toLowerCase().trim() === email
+      )) || /^funcionario@/i.test(email);
+      window.currentUserRole = ehFunc ? 'funcionario' : 'admin';
+    }
+  }
+  aplicarRestricoesPerfil();
+}
+
 // Aplica restrições visuais para funcionário (esconde menus e botões não permitidos)
 function aplicarRestricoesPerfil() {
   const userEl = document.getElementById('sidebar-user-email');
   if (isAdmin()) {
-    document.querySelectorAll('.nav-only-admin').forEach(el => el.style.display = '');
+    document.querySelectorAll('.nav-only-admin').forEach(el => {
+      el.style.display = el.classList.contains('btn') ? 'inline-flex' : '';
+    });
     document.querySelectorAll('.btn-only-admin').forEach(el => el.style.display = '');
     document.querySelectorAll('.admin-only-card').forEach(el => el.style.display = '');
     const finCol = document.getElementById('nav-col-financeiro');
@@ -2048,6 +2145,7 @@ function aplicarRestricoesPerfil() {
     const el = document.getElementById(id);
     if (el) el.style.display = 'none';
   });
+  document.querySelectorAll('.nav-only-admin').forEach(el => el.style.display = 'none');
   const finCol = document.getElementById('nav-col-financeiro');
   if (finCol) finCol.style.display = 'none';
 
@@ -2360,6 +2458,7 @@ function _aplicarDadosNuvem(remote, opts) {
   }
   _applyDefaults();
   safeSaveLocalStorage(db);
+  if (Array.isArray(remote?.adminEmails) || Array.isArray(remote?.funcionarioEmails)) atualizarPerfilAdmin();
   return { antes, depois: _contarRegistrosSync() };
 }
 
@@ -2367,9 +2466,15 @@ function _maxId(arr) {
   return (arr || []).reduce((m, x) => Math.max(m, parseInt(x.id) || 0), 0);
 }
 
-// Puxa nuvem sem toast — usado ao focar a aba e no sync periódico.
-async function _pullNuvemSilencioso() {
+// Puxa nuvem sem toast — usado ao voltar pra aba (com limite de frequência).
+let _ultimoPullNuvemMs = 0;
+const PULL_NUVEM_MIN_MS = 120000;
+
+async function _pullNuvemSilencioso(force) {
   if (!window._fbLoad || !window.currentUserEmail || window._ignorandoSnapshot) return false;
+  const agora = Date.now();
+  if (!force && agora - _ultimoPullNuvemMs < PULL_NUVEM_MIN_MS) return false;
+  _ultimoPullNuvemMs = agora;
   try {
     const remote = await window._fbLoad();
     if (!remote) return false;
@@ -2397,7 +2502,7 @@ async function forcarSyncNuvem() {
   if (!window._fbLoad) return toast('Firebase não disponível', 'error');
   toast('⏳ Baixando dados completos da nuvem...');
   try {
-    const remote = await window._fbLoad();
+    const remote = await window._fbLoad({ forceFull: true });
     if (!remote) return toast('Não foi possível ler a nuvem', 'error');
     const { antes, depois } = _aplicarDadosNuvem(remote, { substituirListas: true });
     _atualizarUIAposSync();
@@ -2456,13 +2561,11 @@ function loadDB() {
         }
       } catch(e) { console.error('Erro ao aplicar dados do Firebase:', e); }
     });
-    // Sync extra ao voltar pra aba (ex: outro PC fez venda enquanto esta aba estava em segundo plano)
-    window.addEventListener('focus', () => { _pullNuvemSilencioso(); });
+    // Sync ao voltar pra aba (no máximo 1x a cada 2 min — o listener cobre o tempo real)
+    window.addEventListener('focus', () => { _pullNuvemSilencioso(false); });
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') _pullNuvemSilencioso();
+      if (document.visibilityState === 'visible') _pullNuvemSilencioso(false);
     });
-    // Fallback: a cada 45s puxa nuvem caso o listener perca algum evento
-    setInterval(() => { _pullNuvemSilencioso(); }, 45000);
   }, { once: true });
 }
 
@@ -2487,10 +2590,15 @@ function saveDBAgora() {
 async function flushToFirebase() {
   if (!window._fbSave) return false;
   try {
-    // Busca o que está na nuvem agora e funde antes de sobrescrever,
-    // pra não apagar o que outro computador acabou de salvar.
     if (window._fbLoad) {
-      const remote = await window._fbLoad();
+      let remote = null;
+      const cacheRecente = window._ultimoRemoteCache
+        && (Date.now() - (window._ultimoRemoteCacheAt || 0) < 20000);
+      if (cacheRecente) {
+        remote = window._ultimoRemoteCache;
+      } else {
+        remote = await window._fbLoad();
+      }
       if (remote) {
         db = _mergeDB(db, remote);
         _aplicarExclusoesPendentes(window._exclusoesPendentes);
@@ -2532,7 +2640,7 @@ async function flushToFirebase() {
       }
       // Exclusão já foi aplicada nas duas fusões possíveis deste ciclo de salvamento.
       window._exclusoesPendentes = null;
-    }, 3000);
+    }, 5000);
     return ok !== false;
   } catch(e) { console.error('Firebase flush error:', e); return false; }
 }
@@ -2899,18 +3007,21 @@ function _somarPagamentosNoMapa(registro, pagTotais, valorFallback) {
 }
 
 function navigate(page) {
-  // Bloqueia páginas restritas para funcionário
   const paginasRestritasFuncionario = ['fechamento', 'financeiro', 'config'];
   if (!isAdmin() && paginasRestritasFuncionario.includes(page)) {
     toast('⛔ Acesso restrito. Somente administradores.', 'error');
     return;
   }
+  const subheader = document.querySelector('.subheader');
+  if (subheader) subheader.style.display = page === 'config' ? 'none' : '';
   pages.forEach(p => {
     document.getElementById('page-'+p).classList.remove('active');
     const navEl = document.getElementById('nav-'+p);
     if (navEl) navEl.classList.remove('active');
   });
   document.getElementById('page-'+page).classList.add('active');
+  const pageEl = document.getElementById('page-'+page);
+  if (pageEl) pageEl.scrollTop = 0;
   const navActive = document.getElementById('nav-'+page);
   if (navActive) navActive.classList.add('active');
   document.querySelectorAll('.topnav-quick a').forEach(a => a.classList.remove('active'));
