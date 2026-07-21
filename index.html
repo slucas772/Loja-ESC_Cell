@@ -4083,7 +4083,11 @@ function clearOSForm() {
     const el = document.getElementById(id); if(el) el.value='';
   });
   const idWrap = document.getElementById('os-id-editavel-wrap');
-  if (idWrap) idWrap.style.display = 'none';
+  const idCampo = document.getElementById('os-id-editavel');
+  if (idWrap && idCampo) {
+    idWrap.style.display = 'block';
+    idCampo.value = db.nextOSId;
+  }
   document.getElementById('os-status').value='aguardando';
   document.getElementById('os-valor').value='';
   document.getElementById('os-custo-peca').value='';
@@ -4293,7 +4297,20 @@ function salvarOS() {
     }
     toast('O.S. atualizada!');
   } else {
-    db.ordens.push(_touch({id: db.nextOSId++, ...os}));
+    let novoId = db.nextOSId;
+    const campoIdNovo = document.getElementById('os-id-editavel');
+    if (campoIdNovo && campoIdNovo.value !== '') {
+      const idDesejado = parseInt(campoIdNovo.value);
+      if (!idDesejado || idDesejado < 1) {
+        return toast('Número de O.S. inválido', 'error');
+      }
+      if (db.ordens.some(x => x.id === idDesejado)) {
+        return toast('Já existe uma O.S. com o número ' + idDesejado, 'error');
+      }
+      novoId = idDesejado;
+    }
+    db.ordens.push(_touch({id: novoId, ...os}));
+    if (novoId >= db.nextOSId) db.nextOSId = novoId + 1;
     toast('O.S. criada!');
   }
   editingOSId = null;
