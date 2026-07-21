@@ -4284,6 +4284,10 @@ function salvarOS() {
           novoId = idDesejado;
         }
       }
+      if (novoId !== editingOSId) {
+        // Garante que o número antigo não "ressuscite" ao fundir com a nuvem
+        _registrarExclusaoPendenteOS(editingOSId);
+      }
       db.ordens[idx] = _touch({...db.ordens[idx], ...os, id: novoId});
       if (novoId >= db.nextOSId) db.nextOSId = novoId + 1;
     }
