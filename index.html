@@ -1826,6 +1826,12 @@ html[data-theme="dark"] .nav-mega-panel { box-shadow:0 12px 40px rgba(0,0,0,0.45
     <div class="modal-body">
       <input type="hidden" id="os-id">
 
+      <div class="form-group" id="os-id-editavel-wrap" style="display:none;grid-column:1/-1;background:var(--red-bg);border:1px solid rgba(239,68,68,.3);border-radius:var(--radius);padding:10px 14px;margin-bottom:4px">
+        <label style="color:var(--red)">🔑 Número da O.S. (somente admin)</label>
+        <input type="number" id="os-id-editavel" min="1" step="1" placeholder="Ex: 210">
+        <small style="color:var(--text3);display:block;margin-top:4px">Altere apenas se souber o que está fazendo. O número não pode repetir uma O.S. já existente.</small>
+      </div>
+
       <div class="form-grid">
         <div class="form-group">
           <label>Nome do Cliente *</label>
@@ -1855,6 +1861,10 @@ html[data-theme="dark"] .nav-mega-panel { box-shadow:0 12px 40px rgba(0,0,0,0.45
             <option value="finalizado">Finalizado</option>
             <option value="entregue">Entregue</option>
           </select>
+        </div>
+        <div class="form-group">
+          <label>Data Prevista de Entrega</label>
+          <input type="date" id="os-data-prevista">
         </div>
         <div class="form-group" style="grid-column:1/-1">
           <label>Defeito Relatado *</label>
@@ -4069,9 +4079,11 @@ function clearChecklist() {
 
 
 function clearOSForm() {
-  ['os-id','os-cliente','os-telefone','os-marca','os-modelo','os-imei','os-defeito','os-servico'].forEach(id=>{
+  ['os-id','os-cliente','os-telefone','os-marca','os-modelo','os-imei','os-defeito','os-servico','os-data-prevista','os-id-editavel'].forEach(id=>{
     const el = document.getElementById(id); if(el) el.value='';
   });
+  const idWrap = document.getElementById('os-id-editavel-wrap');
+  if (idWrap) idWrap.style.display = 'none';
   document.getElementById('os-status').value='aguardando';
   document.getElementById('os-valor').value='';
   document.getElementById('os-custo-peca').value='';
@@ -4235,6 +4247,7 @@ function salvarOS() {
   
   const checklist = getChecklist();
   const avarias = document.getElementById('os-avarias')?.value||'';
+  const dataPrevista = document.getElementById('os-data-prevista')?.value || '';
   const os = {
     cliente, telefone, marca, modelo,
     imei: document.getElementById('os-imei').value,
@@ -4247,7 +4260,7 @@ function salvarOS() {
     lucro,
     pagamento: pag, parcelas,
     pagamentos: pagamentosOS,
-    checklist, avarias,
+    checklist, avarias, dataPrevista,
     cliente_id: window._osClienteId || null,
     data: new Date().toISOString()
   };
@@ -4255,7 +4268,25 @@ function salvarOS() {
   
   if (editingOSId) {
     const idx = db.ordens.findIndex(x=>x.id===editingOSId);
-    if (idx>=0) { db.ordens[idx] = _touch({...db.ordens[idx], ...os}); }
+    if (idx>=0) {
+      let novoId = editingOSId;
+      // ── Admin pode renumerar a O.S. livremente ──
+      if (isAdmin()) {
+        const campoId = document.getElementById('os-id-editavel');
+        if (campoId && campoId.value !== '') {
+          const idDesejado = parseInt(campoId.value);
+          if (!idDesejado || idDesejado < 1) {
+            return toast('Número de O.S. inválido', 'error');
+          }
+          if (idDesejado !== editingOSId && db.ordens.some(x => x.id === idDesejado)) {
+            return toast('Já existe uma O.S. com o número ' + idDesejado, 'error');
+          }
+          novoId = idDesejado;
+        }
+      }
+      db.ordens[idx] = _touch({...db.ordens[idx], ...os, id: novoId});
+      if (novoId >= db.nextOSId) db.nextOSId = novoId + 1;
+    }
     toast('O.S. atualizada!');
   } else {
     db.ordens.push(_touch({id: db.nextOSId++, ...os}));
@@ -4283,6 +4314,13 @@ function editarOS(id) {
   window._osClienteId = o.cliente_id || null;
   setChecklist(o.checklist);
   if (document.getElementById('os-avarias')) document.getElementById('os-avarias').value = o.avarias||'';
+  if (document.getElementById('os-data-prevista')) document.getElementById('os-data-prevista').value = o.dataPrevista||'';
+  const idWrap = document.getElementById('os-id-editavel-wrap');
+  const idCampo = document.getElementById('os-id-editavel');
+  if (idWrap && idCampo) {
+    if (isAdmin()) { idWrap.style.display = 'block'; idCampo.value = id; }
+    else { idWrap.style.display = 'none'; idCampo.value = ''; }
+  }
   document.getElementById('os-status').value = o.status;
   document.getElementById('os-valor').value = o.valor;
   document.getElementById('os-custo-peca').value = o.custo_peca;
@@ -5156,7 +5194,7 @@ function imprimirCupomTermico(id) {
   <div style="display:flex;justify-content:space-between;font-size:11px;font-weight:700;margin-bottom:2px;">
     <span>${String(o.id).padStart(4,'0')}</span>
     <span>${dataFormatada}</span>
-    <span>—</span>
+    <span>${o.dataPrevista ? new Date(o.dataPrevista+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</span>
   </div>
 
   <hr class="dashed">
@@ -5169,6 +5207,7 @@ function imprimirCupomTermico(id) {
 
   <div style="font-size:10.5px;font-weight:700;margin-bottom:1px;">Problema</div>
   <div style="font-size:11px;font-weight:900;">${(o.defeito||'NÃO INFORMADO').toUpperCase()}</div>
+  ${o.avarias ? `<div style="font-size:10px;margin-top:4px"><strong>Outros:</strong> ${o.avarias.toUpperCase()}</div>` : ''}
 
   <hr class="dashed">
 
