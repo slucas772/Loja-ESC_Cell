@@ -1827,7 +1827,7 @@ html[data-theme="dark"] .nav-mega-panel { box-shadow:0 12px 40px rgba(0,0,0,0.45
       <input type="hidden" id="os-id">
 
       <div class="form-group" id="os-id-editavel-wrap" style="display:none;grid-column:1/-1;background:var(--red-bg);border:1px solid rgba(239,68,68,.3);border-radius:var(--radius);padding:10px 14px;margin-bottom:4px">
-        <label style="color:var(--red)">🔑 Número da O.S. (somente admin)</label>
+        <label style="color:var(--red)">🔑 Número da O.S.</label>
         <input type="number" id="os-id-editavel" min="1" step="1" placeholder="Ex: 210">
         <small style="color:var(--text3);display:block;margin-top:4px">Altere apenas se souber o que está fazendo. O número não pode repetir uma O.S. já existente.</small>
       </div>
@@ -4270,8 +4270,8 @@ function salvarOS() {
     const idx = db.ordens.findIndex(x=>x.id===editingOSId);
     if (idx>=0) {
       let novoId = editingOSId;
-      // ── Admin pode renumerar a O.S. livremente ──
-      if (isAdmin()) {
+      // ── Admin e funcionário podem renumerar a O.S. livremente ──
+      {
         const campoId = document.getElementById('os-id-editavel');
         if (campoId && campoId.value !== '') {
           const idDesejado = parseInt(campoId.value);
@@ -4322,8 +4322,8 @@ function editarOS(id) {
   const idWrap = document.getElementById('os-id-editavel-wrap');
   const idCampo = document.getElementById('os-id-editavel');
   if (idWrap && idCampo) {
-    if (isAdmin()) { idWrap.style.display = 'block'; idCampo.value = id; }
-    else { idWrap.style.display = 'none'; idCampo.value = ''; }
+    idWrap.style.display = 'block';
+    idCampo.value = id;
   }
   document.getElementById('os-status').value = o.status;
   document.getElementById('os-valor').value = o.valor;
