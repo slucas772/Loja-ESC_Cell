@@ -5204,7 +5204,7 @@ function imprimirCupomTermico(id) {
   <hr class="dashed">
 
   <div style="font-size:10.5px;font-weight:700;margin-bottom:1px;">Equipamento</div>
-  <div style="font-size:10.5px;">SMARTPHONE ${((o.marca||'')+' '+(o.modelo||'')).trim().toUpperCase()}</div>
+  <div style="font-size:10.5px;">${((o.marca||'')+' '+(o.modelo||'')).trim().toUpperCase() || 'NÃO INFORMADO'}</div>
   ${o.cor ? `<div style="font-size:10.5px;">COR: ${o.cor.toUpperCase()}</div>` : ''}
 
   <hr class="dashed">
