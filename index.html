@@ -691,6 +691,8 @@ tbody tr:last-child td { border-bottom:none; }
 .cart-item:hover { background:var(--bg3); }
 .cart-item .ci-name { flex:1; font-size:12px; font-weight:500; }
 .cart-item .ci-qty { display:flex; align-items:center; gap:4px; }
+.cart-item .ci-qty-input { width:40px; text-align:center; font-size:12px; font-family:'JetBrains Mono',monospace; padding:2px 0; border:1px solid var(--border); border-radius:6px; background:var(--bg2); color:var(--text); -moz-appearance:textfield; }
+.cart-item .ci-qty-input::-webkit-outer-spin-button, .cart-item .ci-qty-input::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
 .ci-qty button { width:22px; height:22px; border-radius:5px; border:1px solid var(--border2); background:var(--bg3); color:var(--text); cursor:pointer; font-size:14px; display:flex; align-items:center; justify-content:center; }
 .ci-qty span { font-size:13px; font-weight:600; min-width:20px; text-align:center; font-family:'JetBrains Mono',monospace; }
 .cart-item .ci-price { font-size:12px; font-weight:600; font-family:'JetBrains Mono',monospace; color:var(--text); min-width:60px; text-align:right; }
@@ -2256,7 +2258,7 @@ function _applyDefaults() {
 // removidas) reaparecendo depois de sincronizar com outro computador.
 function _garantirExcluidos() {
   if (!db._excluidos) db._excluidos = {};
-  ['vendas', 'ordens', 'movKeys', 'movIds', 'despKeys'].forEach(k => {
+  ['vendas', 'ordens', 'movKeys', 'movIds', 'despKeys', 'produtos', 'clientes'].forEach(k => {
     if (!Array.isArray(db._excluidos[k])) db._excluidos[k] = [];
   });
 }
@@ -2322,7 +2324,7 @@ function _mergeDB(local, remote) {
   const excLocal = (local && local._excluidos) || {};
   const excRemoto = (remote && remote._excluidos) || {};
   const excFundidos = {};
-  ['vendas', 'ordens', 'movKeys', 'movIds', 'despKeys'].forEach(k => {
+  ['vendas', 'ordens', 'movKeys', 'movIds', 'despKeys', 'produtos', 'clientes'].forEach(k => {
     excFundidos[k] = [...new Set([...(excLocal[k] || []), ...(excRemoto[k] || [])])];
   });
   merged._excluidos = excFundidos;
@@ -2339,11 +2341,15 @@ function _mergeDB(local, remote) {
   const movKeysExcl = new Set(excFundidos.movKeys);
   const movIdsExcl = new Set(excFundidos.movIds || []);
   const despKeysExcl = new Set(excFundidos.despKeys);
+  const idsProdutosExcl = new Set(excFundidos.produtos || []);
+  const idsClientesExcl = new Set(excFundidos.clientes || []);
   if (idsVendasExcl.size) merged.vendas = (merged.vendas || []).filter(v => !idsVendasExcl.has(v.id));
   if (idsOrdensExcl.size) merged.ordens = (merged.ordens || []).filter(o => !idsOrdensExcl.has(o.id));
   if (movIdsExcl.size) merged.movimentacoes = (merged.movimentacoes || []).filter(m => !movIdsExcl.has(m.id));
   if (movKeysExcl.size) merged.movimentacoes = (merged.movimentacoes || []).filter(m => !movKeysExcl.has(_chaveRegistro(m)));
   if (despKeysExcl.size) merged.despesas = (merged.despesas || []).filter(d => !despKeysExcl.has(_chaveRegistro(d)));
+  if (idsProdutosExcl.size) merged.produtos = (merged.produtos || []).filter(p => !idsProdutosExcl.has(p.id));
+  if (idsClientesExcl.size) merged.clientes = (merged.clientes || []).filter(c => !idsClientesExcl.has(c.id));
 
   // Auto-correção: cache local (localStorage) guarda só os 500 registros mais
   // recentes de cada lista. Se a nuvem tem claramente mais, confia na nuvem.
@@ -3267,6 +3273,7 @@ function editarProduto(id) {
 function excluirProduto(id) {
   if (!confirm('Excluir este produto?')) return;
   db.produtos = db.produtos.filter(x=>x.id!==id);
+  _registrarExclusaoPersistente('produtos', [id]);
   saveDB(); renderProdutos(); toast('Produto removido');
 }
 
@@ -3375,6 +3382,19 @@ function changeCartQty(id, delta) {
   renderCart();
 }
 
+// Permite digitar a quantidade direto (ex: 50 folhas impressas) em vez de
+// precisar clicar no "+" uma vez para cada unidade.
+function setCartQty(id, valor) {
+  const ci = cart.find(x=>x.id===id);
+  if (!ci) return;
+  let nova = parseInt(valor, 10);
+  if (isNaN(nova) || nova <= 0) { cart = cart.filter(x=>x.id!==id); renderCart(); return; }
+  const p = db.produtos.find(x=>x.id===id);
+  if (p && nova > p.qty) { nova = p.qty; toast('Quantidade máxima','error'); }
+  ci.qty = nova;
+  renderCart();
+}
+
 function clearCart() {
   cart = [];
   selectedPay = '';
@@ -3391,7 +3411,10 @@ function renderCart() {
         <div class="ci-name">${ci.nome}</div>
         <div class="ci-qty">
           <button onclick="changeCartQty(${ci.id},-1)">−</button>
-          <span>${ci.qty}</span>
+          <input type="number" class="ci-qty-input" min="1" step="1" value="${ci.qty}"
+            onchange="setCartQty(${ci.id}, this.value)"
+            onclick="this.select()"
+            onkeydown="if(event.key==='Enter'){this.blur();}">
           <button onclick="changeCartQty(${ci.id},1)">+</button>
         </div>
         <div class="ci-price">${fmt(ci.preco * ci.qty)}</div>
