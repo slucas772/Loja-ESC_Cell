@@ -3096,11 +3096,13 @@ function openModal(id) { document.getElementById(id).classList.add('open'); }
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
 
 // ===== TOAST =====
+let _toastTimeout = null;
 function toast(msg, type='success') {
   const t = document.getElementById('toast');
   t.textContent = (type==='success'?'✓ ':type==='error'?'✗ ':'') + msg;
   t.className = 'toast show ' + type;
-  setTimeout(()=> t.classList.remove('show'), 2800);
+  if (_toastTimeout) clearTimeout(_toastTimeout);
+  _toastTimeout = setTimeout(()=> t.classList.remove('show'), 3500);
 }
 
 // ===== CURRENCY =====
