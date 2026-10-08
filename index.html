@@ -1834,6 +1834,12 @@ html[data-theme="dark"] .nav-mega-panel { box-shadow:0 12px 40px rgba(0,0,0,0.45
         <small style="color:var(--text3);display:block;margin-top:4px">Altere apenas se souber o que está fazendo. O número não pode repetir uma O.S. já existente.</small>
       </div>
 
+      <div class="form-group" style="grid-column:1/-1;margin-bottom:4px">
+        <label>📝 Referência (opcional)</label>
+        <input type="text" id="os-ref" maxlength="40" placeholder="Ex: Ordem da 1294">
+        <small style="color:var(--text3);display:block;margin-top:4px">Só um texto de lembrete (ex.: número do papel entregue ao cliente). Não altera o número da O.S.</small>
+      </div>
+
       <div class="form-grid">
         <div class="form-group">
           <label>Nome do Cliente *</label>
@@ -4103,15 +4109,25 @@ function clearChecklist() {
 }
 
 
+function _osNumeroExcluido(n) {
+  _garantirExcluidos();
+  return db._excluidos.ordens.includes(n);
+}
+function _proximoNumeroOSLivre() {
+  let n = parseInt(db.nextOSId) || 1;
+  while (_osNumeroExcluido(n) || db.ordens.some(x => x.id === n)) n++;
+  return n;
+}
+
 function clearOSForm() {
-  ['os-id','os-cliente','os-telefone','os-marca','os-modelo','os-imei','os-defeito','os-servico','os-data-prevista','os-id-editavel'].forEach(id=>{
+  ['os-id','os-cliente','os-telefone','os-marca','os-modelo','os-imei','os-defeito','os-servico','os-data-prevista','os-id-editavel','os-ref'].forEach(id=>{
     const el = document.getElementById(id); if(el) el.value='';
   });
   const idWrap = document.getElementById('os-id-editavel-wrap');
   const idCampo = document.getElementById('os-id-editavel');
   if (idWrap && idCampo) {
     idWrap.style.display = 'block';
-    idCampo.value = db.nextOSId;
+    idCampo.value = _proximoNumeroOSLivre();
   }
   document.getElementById('os-status').value='aguardando';
   document.getElementById('os-valor').value='';
@@ -4290,6 +4306,7 @@ function salvarOS() {
     pagamento: pag, parcelas,
     pagamentos: pagamentosOS,
     checklist, avarias, dataPrevista,
+    ref: (document.getElementById('os-ref')?.value || '').trim(),
     cliente_id: window._osClienteId || null,
     data: new Date().toISOString()
   };
@@ -4310,6 +4327,9 @@ function salvarOS() {
           if (idDesejado !== editingOSId && db.ordens.some(x => x.id === idDesejado)) {
             return toast('Já existe uma O.S. com o número ' + idDesejado, 'error');
           }
+          if (idDesejado !== editingOSId && _osNumeroExcluido(idDesejado)) {
+            return toast('O número ' + idDesejado + ' já foi usado e excluído antes. Use o ' + _proximoNumeroOSLivre(), 'error');
+          }
           novoId = idDesejado;
         }
       }
@@ -4322,7 +4342,7 @@ function salvarOS() {
     }
     toast('O.S. atualizada!');
   } else {
-    let novoId = db.nextOSId;
+    let novoId = _proximoNumeroOSLivre();
     const campoIdNovo = document.getElementById('os-id-editavel');
     if (campoIdNovo && campoIdNovo.value !== '') {
       const idDesejado = parseInt(campoIdNovo.value);
@@ -4331,6 +4351,9 @@ function salvarOS() {
       }
       if (db.ordens.some(x => x.id === idDesejado)) {
         return toast('Já existe uma O.S. com o número ' + idDesejado, 'error');
+      }
+      if (_osNumeroExcluido(idDesejado)) {
+        return toast('O número ' + idDesejado + ' já foi usado e excluído antes (a O.S. sumiria). Use o ' + _proximoNumeroOSLivre(), 'error');
       }
       novoId = idDesejado;
     }
@@ -4358,6 +4381,7 @@ function editarOS(id) {
   document.getElementById('os-defeito').value = o.defeito;
   document.getElementById('os-servico').value = o.servico||'';
   window._osClienteId = o.cliente_id || null;
+  if (document.getElementById('os-ref')) document.getElementById('os-ref').value = o.ref || '';
   setChecklist(o.checklist);
   if (document.getElementById('os-avarias')) document.getElementById('os-avarias').value = o.avarias||'';
   if (document.getElementById('os-data-prevista')) document.getElementById('os-data-prevista').value = o.dataPrevista||'';
@@ -4430,6 +4454,7 @@ function renderOS() {
   if (searchTerm) {
     ordens = ordens.filter(o =>
       (o.cliente || '').toLowerCase().includes(searchTerm) ||
+      (o.ref || '').toLowerCase().includes(searchTerm) ||
       (o.telefone || '').toLowerCase().includes(searchTerm) ||
       (o.modelo || '').toLowerCase().includes(searchTerm) ||
       (o.marca || '').toLowerCase().includes(searchTerm)
@@ -4440,7 +4465,7 @@ function renderOS() {
   tb.innerHTML = ordens.map(o=>{
     const s = osStatus[o.status]||{label:o.status,cls:'badge-gray'};
     return `<tr>
-      <td class="font-mono" style="color:var(--text3)">#${o.id}</td>
+      <td class="font-mono" style="color:var(--text3)">#${o.id}${o.ref ? `<div style="font-size:10px;color:var(--amber,#f59e0b);font-family:inherit">${String(o.ref).replace(/</g,'&lt;')}</div>` : ''}</td>
       <td><div style="font-weight:500">${o.cliente}</div><div class="text-sm">${o.telefone}</div></td>
       <td>${o.marca} ${o.modelo}</td>
       <td style="max-width:180px"><div class="text-sm" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${o.defeito}">${o.defeito}</div></td>
